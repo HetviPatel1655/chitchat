@@ -1,7 +1,7 @@
 import { StatusCodes } from "http-status-codes";
 import { APIError } from "../error/apierror";
 import { chatservice } from "../services/chat.service";
-import type { Request } from "../types/request.types.ts";
+import type { Request } from "../types/request.types";
 import type { Response } from "express";
 
 export const startDirectMessage = async (req: Request, res: Response) => {

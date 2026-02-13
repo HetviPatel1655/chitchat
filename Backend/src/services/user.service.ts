@@ -1,5 +1,5 @@
 import type { ClientSession } from "mongoose";
-import type { IUsers } from "../types/model.types.ts";
+import type { IUsers } from "../types/model.types";
 import { UsersModel } from "../models/users.model";
 import { APIError } from "../error/apierror";
 import { StatusCodes } from "http-status-codes";
@@ -14,12 +14,12 @@ export const createUser = async (user: IUsers) => {
     }
 }
 
-export const FindUser = async ({ 
-    query, 
-    populate = [], 
-    session,  
-}: { 
-    query: Partial<IUsers>; 
+export const FindUser = async ({
+    query,
+    populate = [],
+    session,
+}: {
+    query: Partial<IUsers>;
     populate?: {
         path: string;
         select?: string;

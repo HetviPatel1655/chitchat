@@ -1,5 +1,5 @@
 import mongoose, { ClientSession } from "mongoose";
-import type { IUsers } from "../types/model.types.ts";
+import type { IUsers } from "../types/model.types";
 import { UsersModel } from "../models/users.model";
 import { ConversationsModel } from "../models/conversations.model";
 import { MsgsModel } from "../models/msgs.model";
