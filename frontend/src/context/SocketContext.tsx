@@ -22,7 +22,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         if (token && user) {
             console.log("SocketProvider: Initiating connection...");
             // Initialize socket connection
-            const newSocket = io("http://localhost:3000", {
+            const socketUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
+            const newSocket = io(socketUrl, {
                 auth: {
                     token: token,
                 },
