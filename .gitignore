@@ -1,0 +1,35 @@
+# Dependency directories
+node_modules/
+frontend/node_modules/
+Backend/node_modules/
+
+# IDE and System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+Backend/.env
+
+# Build outputs
+frontend/dist/
+frontend/build/
+dist/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+Backend/debug_log.txt
+
+# OS specifics
+*.exe
+*.dll
+*.so
+*.dylib
