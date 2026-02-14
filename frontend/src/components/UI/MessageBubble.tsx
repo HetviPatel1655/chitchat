@@ -2,6 +2,8 @@ import React from 'react';
 import type { Message } from '../../types';
 import Avatar from './Avatar';
 import { useSocket } from '../../context/SocketContext';
+import { useAuth } from '../../context/AuthContext';
+import { formatSystemMessage } from '../../utils/stringUtils';
 
 interface MessageBubbleProps {
     message: Message;
@@ -14,6 +16,7 @@ interface MessageBubbleProps {
 
 const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, senderName, onPinToggle, onReply, onQuoteClick }) => {
     const { socket } = useSocket();
+    const { user } = useAuth();
 
     const handlePinClick = async () => {
         if (!socket) {
@@ -40,6 +43,18 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
         if (typeof sid === 'object' && sid.username) return sid.username;
         return 'User';
     };
+
+    if (message.messageType === 'system') {
+        return (
+            <div className="flex justify-center w-full my-4 animate-fade-in">
+                <div className="px-4 py-1.5 rounded-full bg-slate-800/40 border border-white/5 backdrop-blur-sm">
+                    <p className="text-[11px] text-gray-400 font-medium tracking-wide text-center">
+                        {formatSystemMessage(message.content, user?.username)}
+                    </p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div id={`msg-${message._id}`} className={`flex w-full ${isMyMessage ? 'justify-end' : 'justify-start'} mb-1.5 group animate-scale-in relative transition-all duration-500`}>
@@ -139,7 +154,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
                 </div>
 
                 {/* Action Buttons - Show on Hover */}
-                <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-transparent">
                     {/* Reply Button */}
                     <button
                         onClick={() => onReply?.(message)}

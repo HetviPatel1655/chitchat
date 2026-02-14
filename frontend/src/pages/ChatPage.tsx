@@ -37,8 +37,16 @@ const ChatPage = () => {
                         {selectedConversation ? (
                             <ChatWindow
                                 conversation={selectedConversation}
-                                isOtherUserOnline={onlineUsers.has(selectedConversation.otherUser._id)}
-                                otherUserLastSeen={lastSeenMap.get(selectedConversation.otherUser._id) || selectedConversation.otherUser.lastSeen}
+                                isOtherUserOnline={
+                                    selectedConversation.type === 'direct' && selectedConversation.otherUser
+                                        ? onlineUsers.has(selectedConversation.otherUser._id)
+                                        : false
+                                }
+                                otherUserLastSeen={
+                                    selectedConversation.type === 'direct' && selectedConversation.otherUser
+                                        ? lastSeenMap.get(selectedConversation.otherUser._id) || selectedConversation.otherUser.lastSeen
+                                        : undefined
+                                }
                                 onBack={handleBack}
                             />
                         ) : (

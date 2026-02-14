@@ -7,6 +7,7 @@ export interface IMsgs extends Document {
     status: "sent" | "delivered" | "read";
     isPinned: boolean;
     replyToId?: Types.ObjectId;
+    messageType: "regular" | "system";
     timestamp: Date;
 }
 
@@ -38,6 +39,11 @@ const MsgsSchema: Schema = new Schema({
         type: Schema.Types.ObjectId,
         ref: "Msgs",
         default: null
+    },
+    messageType: {
+        type: String,
+        enum: ["regular", "system"],
+        default: "regular"
     },
     timestamp: {
         type: Date,

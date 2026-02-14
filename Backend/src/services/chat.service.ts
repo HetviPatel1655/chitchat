@@ -3,6 +3,8 @@ import type { IUsers } from "../types/model.types";
 import { UsersModel } from "../models/users.model";
 import { ConversationsModel } from "../models/conversations.model";
 import { MsgsModel } from "../models/msgs.model";
+import { GrpsModel } from "../models/groups.model";
+import { ReadStatusModel } from "../models/readStatus.model";
 import { APIError } from "../error/apierror";
 import { StatusCodes } from "http-status-codes";
 
@@ -38,13 +40,19 @@ export class chatservice {
                 conversation = await ConversationsModel.create({
                     participant1Id,
                     participant2Id,
+                    participants: [new mongoose.Types.ObjectId(participant1Id), new mongoose.Types.ObjectId(participant2Id)],
                     type: "direct",
                     lastMessage: null
                 });
+            } else if (!conversation.participants || conversation.participants.length === 0) {
+                // Migration: update existing conversation with participants array
+                conversation.participants = [new mongoose.Types.ObjectId(participant1Id), new mongoose.Types.ObjectId(participant2Id)];
+                await conversation.save();
             }
 
             return {
                 conversationId: conversation._id.toString(),
+                type: "direct",
                 otherUser: {
                     _id: receiver._id.toString(),
                     username: receiver.username,
@@ -78,9 +86,7 @@ export class chatservice {
                 throw new APIError(StatusCodes.NOT_FOUND, "Conversation not found");
             }
 
-            const isParticipant =
-                conversation.participant1Id.toString() === senderId ||
-                conversation.participant2Id.toString() === senderId;
+            const isParticipant = conversation.participants.some(p => p.toString() === senderId);
 
             if (!isParticipant) {
                 throw new APIError(StatusCodes.FORBIDDEN, "You are not a participant of this conversation");
@@ -96,13 +102,14 @@ export class chatservice {
                 ...(replyToId && { replyToId })
             });
 
-            // Update conversation's last message
+            // Update conversation's last message and touch updatedAt
             await ConversationsModel.findByIdAndUpdate(conversationId, {
                 lastMessage: {
                     content,
                     senderId,
                     timestamp: new Date()
-                }
+                },
+                updatedAt: new Date() // Force touch for sorting
             });
             console.log(`✅ Message saved successfully. ID: ${message._id}. Collection: ${MsgsModel.collection.name}`);
 
@@ -133,9 +140,7 @@ export class chatservice {
                 throw new APIError(StatusCodes.NOT_FOUND, "Conversation not found");
             }
 
-            const isParticipant =
-                conversation.participant1Id.toString() === userId ||
-                conversation.participant2Id.toString() === userId;
+            const isParticipant = conversation.participants.some(p => p.toString() === userId);
 
             if (!isParticipant) {
                 throw new APIError(StatusCodes.FORBIDDEN, "You are not a participant of this conversation");
@@ -182,31 +187,105 @@ export class chatservice {
     // Get all conversations for a user
     static async getConversations(userId: string) {
         try {
-            const conversations = await ConversationsModel.find({
+            const userObjectId = new mongoose.Types.ObjectId(userId);
+
+            // Raw collection access bypasses Mongoose schema casting/validation
+            // This is CRITICAL for legacy documents where IDs are stored as plain strings.
+            if (!mongoose.connection.db) {
+                throw new APIError(StatusCodes.INTERNAL_SERVER_ERROR, "Database connection not established");
+            }
+            const conversationsColl = mongoose.connection.db.collection('conversations');
+            const conversations = await conversationsColl.find({
                 $or: [
+                    { participants: userObjectId },
+                    { participants: userId },
+                    { participant1Id: userObjectId },
                     { participant1Id: userId },
+                    { participant2Id: userObjectId },
                     { participant2Id: userId }
                 ]
             })
-                .populate("participant1Id", "username email lastSeen")
-                .populate("participant2Id", "username email lastSeen")
-                .sort({ "lastMessage.timestamp": -1 })
-                .lean();
+                .sort({ updatedAt: -1, createdAt: -1 })
+                .toArray();
 
-            return conversations.map(conv => {
-                const p1 = conv.participant1Id as any;
-                const p2 = conv.participant2Id as any;
+            console.log(`🔍 [getConversations] Found ${conversations.length} hits via raw query.`);
 
-                const isP1Me = p1._id.toString() === userId.toString();
-                console.log(`Debug GetConversations: Me=${userId}, P1=${p1._id}, match=${isP1Me}`);
+            // Manual population since we bypassed Mongoose
+            const populatedConversations = await Promise.all(conversations.map(async (conv) => {
+                const type = conv.type || "direct"; // Fallback for legacy
+                // Ensure we have a lastMessage time for sorting/display
+                // If it's missing from metadata, try to find it in the msgs collection (legacy support)
+                let lastMsgContent = conv.lastMessage?.content;
+                let lastMsgTime = conv.lastMessage?.timestamp || conv.updatedAt || conv.createdAt;
+
+                if (!conv.lastMessage?.content) {
+                    const latestMsg = await MsgsModel.findOne({ conversationId: conv._id })
+                        .sort({ timestamp: -1 })
+                        .lean();
+                    if (latestMsg) {
+                        lastMsgContent = latestMsg.content;
+                        lastMsgTime = latestMsg.timestamp;
+
+                        // Async healing - don't wait for this
+                        ConversationsModel.findByIdAndUpdate(conv._id, {
+                            lastMessage: {
+                                content: latestMsg.content,
+                                senderId: latestMsg.senderId,
+                                timestamp: latestMsg.timestamp
+                            }
+                        }).exec().catch(err => console.error("Error healing conversation:", err));
+                    }
+                }
+
+                if (type === "group") {
+                    const groupMetadata = await GrpsModel.findOne({ conversationId: conv._id }).select("owner").lean();
+
+                    // Calculate unreadCount
+                    const readStatus = await ReadStatusModel.findOne({ userId, conversationId: conv._id }).lean();
+                    const unreadCount = await MsgsModel.countDocuments({
+                        conversationId: conv._id,
+                        senderId: { $ne: userId },
+                        timestamp: { $gt: readStatus?.lastReadAt || new Date(0) }
+                    });
+
+                    return {
+                        conversationId: conv._id.toString(),
+                        type: "group",
+                        name: conv.name || "Unnamed Group",
+                        participants: (conv.participants || []).map((p: any) => p.toString()),
+                        ownerId: groupMetadata?.owner?.toString(),
+                        lastMessage: lastMsgContent || "No messages yet",
+                        lastMessageTime: lastMsgTime,
+                        unreadCount
+                    };
+                }
+
+                // Direct Chat
+                const p1Id = conv.participant1Id?.toString();
+                const p2Id = conv.participant2Id?.toString();
+                const otherParticipantId = p1Id === userId ? p2Id : p1Id;
+
+                const otherUser = await UsersModel.findById(otherParticipantId).select("username email lastSeen profilePicture").lean();
+
+                // Calculate unreadCount for direct chat
+                const readStatus = await ReadStatusModel.findOne({ userId, conversationId: conv._id }).lean();
+                const unreadCount = await MsgsModel.countDocuments({
+                    conversationId: conv._id,
+                    senderId: { $ne: userId },
+                    timestamp: { $gt: readStatus?.lastReadAt || new Date(0) }
+                });
 
                 return {
-                    conversationId: conv._id,
-                    otherUser: isP1Me ? p2 : p1,
-                    lastMessage: conv.lastMessage?.content || "No messages yet",
-                    lastMessageTime: conv.lastMessage?.timestamp || conv.createdAt
+                    conversationId: conv._id.toString(),
+                    type: "direct",
+                    otherUser: otherUser || { _id: otherParticipantId, username: "User" },
+                    lastMessage: lastMsgContent || "No messages yet",
+                    lastMessageTime: lastMsgTime,
+                    unreadCount
                 };
-            });
+            }));
+
+            return populatedConversations.filter(c => c !== null);
         } catch (error) {
             throw new APIError(
                 StatusCodes.INTERNAL_SERVER_ERROR,
@@ -232,9 +311,7 @@ export class chatservice {
                 throw new APIError(StatusCodes.NOT_FOUND, "Conversation not found");
             }
 
-            const isParticipant =
-                conversation.participant1Id.toString() === userId ||
-                conversation.participant2Id.toString() === userId;
+            const isParticipant = conversation.participants.some(p => p.toString() === userId);
 
             if (!isParticipant) {
                 throw new APIError(StatusCodes.FORBIDDEN, "You are not a participant of this conversation");
@@ -262,7 +339,7 @@ export class chatservice {
         try {
             // 1. Find all conversations where user is a participant
             const conversations = await ConversationsModel.find({
-                $or: [{ participant1Id: userId }, { participant2Id: userId }]
+                participants: userId
             }).select('_id');
 
             const conversationIds = conversations.map(c => c._id);
@@ -304,6 +381,15 @@ export class chatservice {
                 await MsgsModel.updateMany(query, { status: "read" });
                 console.log(`Updated ${messages.length} messages to read in conv ${conversationId} for user ${userId}`);
             }
+
+            // Update ReadStatus regardless of whether individual messages were updated
+            // (This handles cases where messages were already read or for group sync)
+            await ReadStatusModel.findOneAndUpdate(
+                { userId, conversationId },
+                { lastReadAt: new Date() },
+                { upsert: true, new: true }
+            );
+            console.log(`Updated ReadStatus for user ${userId} in conv ${conversationId}`);
 
             return messages;
         } catch (error) {

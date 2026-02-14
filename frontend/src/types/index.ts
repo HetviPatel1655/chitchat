@@ -13,6 +13,7 @@ export interface Message {
     status: 'sent' | 'delivered' | 'read';
     timestamp: string;
     isPinned?: boolean;
+    messageType?: 'regular' | 'system';
     replyTo?: {
         _id: string;
         content: string;
@@ -22,22 +23,22 @@ export interface Message {
 
 export interface Conversation {
     conversationId: string;
-    otherUser: {
+    type: "direct" | "group";
+    name?: string; // Only for groups
+    otherUser?: {
         _id: string;
         username: string;
         email: string;
         profilePicture?: string;
         lastSeen?: string;
     };
-    lastMessage: string | { // Backend getConversations returns string, but sometimes we might want object?
+    participants?: string[]; // IDs of users
+    ownerId?: string; // Added for groups
+    lastMessage: string | {
         content: string;
         senderId: string;
         timestamp: string;
     };
-    // Wait, getConversations returns `lastMessage: string`.
-    // But ChatWindow might need more?
-    // Let's stick to what getConversations returns for list: string.
-    // But modifying it to string might break if we want bold unread?
-    // Backend says: lastMessage: conv.lastMessage?.content || "No messages yet" -> STRING.
     lastMessageTime: string;
+    unreadCount?: number;
 }

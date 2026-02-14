@@ -30,3 +30,10 @@ export interface IMsgs {
     timestamp: Date;
 }
 
+export interface IReadStatus {
+    _id: Types.ObjectId;
+    userId: Types.ObjectId;
+    conversationId: Types.ObjectId;
+    lastReadAt: Date;
+}
+

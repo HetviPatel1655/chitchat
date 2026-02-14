@@ -4,6 +4,9 @@ import { UsersModel } from "../models/users.model";
 import { ConversationsModel } from "../models/conversations.model";
 import { chatservice } from "./chat.service";
 import { MsgsModel } from "../models/msgs.model";
+import { GrpsService } from "./grps.service";
+import { GrpsModel } from "../models/groups.model";
+import { Types } from "mongoose";
 
 // Store active users: userId -> Array of socketIds
 const activeUsers = new Map<string, string[]>();
@@ -63,23 +66,217 @@ export class SocketService {
             // 1. Join a personal room for targeted notifications (sidebar updates, etc.)
             socket.join(`user_${userId}`);
 
-            // 2. Track active users
+            // 2. Automatically join all conversation rooms the user is a part of
+            const userConversations = await ConversationsModel.find({ participants: userId });
+            userConversations.forEach(conv => {
+                socket.join(conv._id.toString());
+                console.log(`📡 User ${username} auto-joined room: ${conv._id}`);
+            });
+
+            // 3. Track active users
             if (!activeUsers.has(userId)) {
                 activeUsers.set(userId, []);
             }
             activeUsers.get(userId)!.push(socket.id);
 
-            // 3. Emit online status to everyone
+            // 4. Emit online status to everyone
             io.emit("user_online", { userId, username, timestamp: new Date() });
 
-            // 4. Send the list of ALL currently online users to the newly connected socket
+            // 5. Send the list of ALL currently online users to the newly connected socket
             const onlineUserIds = Array.from(activeUsers.keys());
             socket.emit("active_users", { userIds: onlineUserIds });
+
+            // ==================== GROUP OPERATIONS ====================
+
+            socket.on("create_group", async (data: { name: string; members: string[] }, callback) => {
+                try {
+                    const result = await GrpsService.createGroup(userId, data.name, data.members);
+                    const conversationId = result.conversationId;
+
+                    // Join the room for the creator
+                    socket.join(conversationId);
+
+                    // Notify all online members to join the new room and update their sidebar
+                    result.participants.forEach((participantId: Types.ObjectId) => {
+                        const pidStr = participantId.toString();
+                        io.to(`user_${pidStr}`).emit("group_created", {
+                            conversationId,
+                            name: data.name,
+                            type: "group",
+                            ownerId: userId,
+                            lastMessage: "Group created",
+                            lastMessageTime: new Date()
+                        });
+
+                        // If they are online, make their sockets join the new room
+                        const memberSockets = activeUsers.get(pidStr);
+                        if (memberSockets) {
+                            memberSockets.forEach(sid => {
+                                const s = io.sockets.sockets.get(sid);
+                                s?.join(conversationId);
+                            });
+                        }
+                    });
+
+                    // Broadcast the system message to the new group room
+                    const systemPayload = {
+                        _id: result.systemMessage._id.toString(),
+                        conversationId,
+                        senderId: userId,
+                        senderUsername: socket.data.user?.username,
+                        content: result.systemMessage.content,
+                        timestamp: result.systemMessage.timestamp,
+                        status: "sent",
+                        messageType: "system",
+                        type: "group"
+                    };
+
+                    io.to(conversationId).emit("receive_message", systemPayload);
+
+                    if (typeof callback === 'function') callback({ success: true, conversationId });
+                } catch (error) {
+                    console.error("Socket create_group error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: "Failed to create group" });
+                }
+            });
+
+            socket.on("get_my_groups", async (callback) => {
+                try {
+                    const groups = await GrpsService.listUserGroups(userId);
+                    if (typeof callback === 'function') callback({ success: true, groups });
+                } catch (error) {
+                    if (typeof callback === 'function') callback({ success: false, error: "Failed to fetch groups" });
+                }
+            });
+
+            socket.on("add_to_group", async (data: { conversationId: string; userId: string }, callback) => {
+                try {
+                    const result = await GrpsService.addMember(data.conversationId, data.userId, userId);
+
+                    // 1. Notify the new user to update their sidebar
+                    io.to(`user_${data.userId}`).emit("group_created", {
+                        conversationId: data.conversationId,
+                        name: result.groupName,
+                        type: "group",
+                        ownerId: userId,
+                        lastMessage: result.systemMessage.content,
+                        lastMessageTime: result.systemMessage.timestamp
+                    });
+
+                    // 2. Make their sockets join the room if online
+                    const memberSockets = activeUsers.get(data.userId);
+                    if (memberSockets) {
+                        memberSockets.forEach(sid => {
+                            const s = io.sockets.sockets.get(sid);
+                            s?.join(data.conversationId);
+                        });
+                    }
+
+                    // 3. Broadcast the system message to the entire group
+                    const systemPayload = {
+                        _id: result.systemMessage._id.toString(),
+                        conversationId: data.conversationId,
+                        senderId: userId,
+                        senderUsername: socket.data.user?.username,
+                        content: result.systemMessage.content,
+                        timestamp: result.systemMessage.timestamp,
+                        status: "sent",
+                        messageType: "system",
+                        type: "group"
+                    };
+
+                    io.to(data.conversationId).emit("receive_message", systemPayload);
+
+                    // 4. Broadcast participant update to the entire group
+                    io.to(data.conversationId).emit("member_added", {
+                        conversationId: data.conversationId,
+                        userId: data.userId
+                    });
+
+                    if (typeof callback === 'function') callback({ success: true });
+                } catch (error) {
+                    console.error("Socket add_to_group error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: error instanceof Error ? error.message : "Failed to add member" });
+                }
+            });
+
+            socket.on("remove_from_group", async (data: { conversationId: string; userId: string }, callback) => {
+                try {
+                    const result = await GrpsService.removeMember(data.conversationId, data.userId, userId);
+
+                    // 1. Notify the REMOVED user to update their sidebar (remove the group)
+                    io.to(`user_${data.userId}`).emit("removed_from_group", {
+                        conversationId: data.conversationId
+                    });
+
+                    // 2. Make their sockets leave the room
+                    const memberSockets = activeUsers.get(data.userId);
+                    if (memberSockets) {
+                        memberSockets.forEach(sid => {
+                            const s = io.sockets.sockets.get(sid);
+                            s?.leave(data.conversationId);
+                        });
+                    }
+
+                    // 3. Broadcast the system message to the remaining group
+                    const systemPayload = {
+                        _id: result.systemMessage._id.toString(),
+                        conversationId: data.conversationId,
+                        senderId: userId,
+                        senderUsername: socket.data.user?.username,
+                        content: result.systemMessage.content,
+                        timestamp: result.systemMessage.timestamp,
+                        status: "sent",
+                        messageType: "system",
+                        type: "group"
+                    };
+
+                    io.to(data.conversationId).emit("receive_message", systemPayload);
+
+                    // 4. Broadcast participant update to the entire group
+                    io.to(data.conversationId).emit("member_removed", {
+                        conversationId: data.conversationId,
+                        userId: data.userId
+                    });
+
+                    if (typeof callback === 'function') callback({ success: true });
+                } catch (error) {
+                    console.error("Socket remove_from_group error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: error instanceof Error ? error.message : "Failed to remove member" });
+                }
+            });
+
+            socket.on("delete_group", async (data: { conversationId: string }, callback) => {
+                try {
+                    const result = await GrpsService.deleteGroup(data.conversationId, userId);
+
+                    // Notify all participants involved to remove the group from their sidebars
+                    result.participantIds.forEach(pid => {
+                        io.to(`user_${pid}`).emit("group_deleted", {
+                            conversationId: data.conversationId
+                        });
+
+                        // Make their sockets leave the room
+                        const memberSockets = activeUsers.get(pid);
+                        if (memberSockets) {
+                            memberSockets.forEach(sid => {
+                                const s = io.sockets.sockets.get(sid);
+                                s?.leave(data.conversationId);
+                            });
+                        }
+                    });
+
+                    if (typeof callback === 'function') callback({ success: true });
+                } catch (error) {
+                    console.error("Socket delete_group error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: error instanceof Error ? error.message : "Failed to delete group" });
+                }
+            });
 
             // ==================== JOIN CONVERSATION ====================
             socket.on("join_conversation", (data: { conversationId: string }) => {
                 socket.join(data.conversationId);
-                console.log(`👥 User ${username} joined room: ${data.conversationId}`);
+                console.log(`👥 User ${username} explicitly joined room: ${data.conversationId}`);
             });
 
             // ==================== TYPING INDICATOR ====================
@@ -98,33 +295,35 @@ export class SocketService {
             // ==================== SEND MESSAGE ====================
             socket.on("send_message", async (data: { conversationId: string; content: string; replyToId?: string }, callback) => {
                 try {
-                    // Check if user is online logic moved after message creation
-
                     const { conversationId, content, replyToId } = data;
                     if (!content?.trim()) {
-                        return callback?.({ success: false, error: "Empty message" });
+                        if (typeof callback === 'function') callback({ success: false, error: "Empty message" });
+                        return;
                     }
 
                     const message = await chatservice.saveMessage(userId, conversationId, content, replyToId);
 
                     // Find recipient to notify their sidebar
                     const conversation = await ConversationsModel.findById(conversationId);
-                    const recipientId = conversation?.participant1Id.toString() === userId
-                        ? conversation?.participant2Id.toString()
-                        : conversation?.participant1Id.toString();
+
+                    if (!conversation) return;
 
                     let status = "sent";
-                    if (recipientId && activeUsers.has(recipientId)) {
-                        status = "delivered";
-                        message.status = "delivered";
-                        await message.save();
+                    // For direct chats, we still want to track 'delivered' status for the recipient
+                    if (conversation.type === "direct") {
+                        const recipientId = conversation.participants.find(p => p.toString() !== userId)?.toString();
+                        if (recipientId && activeUsers.has(recipientId)) {
+                            status = "delivered";
+                            message.status = "delivered";
+                            await message.save();
 
-                        // Notify sender immediately if delivered
-                        io.to(`user_${userId}`).emit("message_delivered", {
-                            messageId: message._id.toString(),
-                            conversationId,
-                            isDelivered: true
-                        });
+                            // Notify sender immediately if delivered
+                            io.to(`user_${userId}`).emit("message_delivered", {
+                                messageId: message._id.toString(),
+                                conversationId,
+                                isDelivered: true
+                            });
+                        }
                     }
 
                     // Build reply data if replying to a message
@@ -150,21 +349,25 @@ export class SocketService {
                         content: message.content,
                         timestamp: message.timestamp,
                         status: status,
+                        type: conversation.type,
                         ...(replyTo && { replyTo })
                     };
 
-                    // Broadcast to specific conversation room (for active chat)
+                    // 1. Broadcast to the conversation room (active viewers)
                     io.to(conversationId).emit("receive_message", payload);
 
-                    // Broadcast to recipient's personal room (for sidebar sync)
-                    if (recipientId) {
-                        io.to(`user_${recipientId}`).emit("receive_message", payload);
-                    }
+                    // 2. Broadcast to all participants' personal rooms (sidebar sync for offline/inactive users)
+                    conversation.participants.forEach(participantId => {
+                        const pidStr = participantId.toString();
+                        if (pidStr !== userId) {
+                            io.to(`user_${pidStr}`).emit("receive_message", payload);
+                        }
+                    });
 
-                    callback?.({ success: true, messageId: message._id.toString() });
+                    if (typeof callback === 'function') callback({ success: true, messageId: message._id.toString() });
                 } catch (error) {
                     console.error("Socket send_message error:", error);
-                    callback?.({ success: false, error: "Internal error" });
+                    if (typeof callback === 'function') callback({ success: false, error: "Internal error" });
                 }
             });
 
@@ -199,10 +402,10 @@ export class SocketService {
 
 
                     console.log('[CALLBACK] Sending response:', JSON.stringify(callbackResponse, null, 2));
-                    callback?.(callbackResponse);
+                    if (typeof callback === 'function') callback(callbackResponse);
                 } catch (error) {
                     console.error("Socket toggle_pin_message error:", error);
-                    callback?.({ success: false, error: error instanceof Error ? error.message : "Failed to toggle pin" });
+                    if (typeof callback === 'function') callback({ success: false, error: error instanceof Error ? error.message : "Failed to toggle pin" });
                 }
             });
 
@@ -214,21 +417,19 @@ export class SocketService {
             });
 
             // ==================== MARK MESSAGES READ ====================
-            socket.on("mark_messages_read", async (data: { conversationId: string; senderId: string }) => {
+            socket.on("mark_messages_read", async (data: { conversationId: string }) => {
                 try {
                     const readMessages = await chatservice.markMessagesAsRead(userId, data.conversationId);
 
+                    // Notify the conversation room (including other tabs for this user)
+                    // We emit even if readMessages.length === 0 to sync ReadStatus across client tabs
+                    io.to(data.conversationId).emit("message_read", {
+                        conversationId: data.conversationId,
+                        messageIds: readMessages.map(m => m._id.toString()),
+                        readerId: userId
+                    });
+
                     if (readMessages.length > 0) {
-                        // Notify the Sender (the person who sent the messages) that they have been read
-                        // We can broadcast to the conversation room or specific user
-                        // Emitting to conversation room is easier as it covers multiple devices
-
-                        io.to(data.conversationId).emit("message_read", {
-                            conversationId: data.conversationId,
-                            messageIds: readMessages.map(m => m._id.toString()),
-                            readerId: userId
-                        });
-
                         console.log(`✅ Marked ${readMessages.length} messages as read in ${data.conversationId}`);
                     }
                 } catch (error) {

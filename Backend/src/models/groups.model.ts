@@ -1,19 +1,17 @@
-import mongoose, { Schema, Document } from "mongoose";
+import mongoose, { Schema, Document, Types } from "mongoose";
 
 export interface IGrps extends Document {
-    grpname: string;
-    owner: string;
-    noofmembers: number;  
-    members: string[];
+    name: string;
+    conversationId: Types.ObjectId;
+    owner: Types.ObjectId;
     createdAt: Date;
 }
 
 const GrpsSchema: Schema = new Schema({
     name: { type: String, required: true },
-    owner: { type: String, required: true },
-    noofmembers: { type: Number, default: 1 },
-    members: { type: [String], default: [] },
+    conversationId: { type: Schema.Types.ObjectId, ref: "Conversations", required: true },
+    owner: { type: Schema.Types.ObjectId, ref: "Users", required: true },
     createdAt: { type: Date, default: Date.now }
 });
 
-export const Grps = mongoose.model<IGrps>("Grps", GrpsSchema);
+export const GrpsModel = mongoose.model<IGrps>("Grps", GrpsSchema);

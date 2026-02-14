@@ -6,6 +6,9 @@ import { useSocket } from '../../context/SocketContext';
 import MessageBubble from '../UI/MessageBubble';
 import Avatar from '../UI/Avatar';
 import PinnedMessagesBar from '../UI/PinnedMessagesBar';
+import AddMemberModal from './AddMemberModal';
+import MemberListModal from './MemberListModal';
+import ConfirmModal from '../UI/ConfirmModal';
 
 interface ChatWindowProps {
     conversation: Conversation;
@@ -18,6 +21,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
     const [messages, setMessages] = useState<Message[]>([]);
     const [newMessage, setNewMessage] = useState('');
     const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+    const [participants, setParticipants] = useState<string[]>(conversation.participants || []);
     const { user } = useAuth();
     const { socket } = useSocket();
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -25,6 +29,28 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
     const [isOtherTyping, setIsOtherTyping] = useState(false);
     const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
+    const [isMemberListModalOpen, setIsMemberListModalOpen] = useState(false);
+    const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+    const [alertConfig, setAlertConfig] = useState<{
+        isOpen: boolean;
+        title: string;
+        message: string;
+        onConfirm?: () => void;
+        type?: 'danger' | 'info';
+    }>({
+        isOpen: false,
+        title: '',
+        message: '',
+    });
+
+    const showAlert = (title: string, message: string, type: 'danger' | 'info' = 'info', onConfirm?: () => void) => {
+        setAlertConfig({ isOpen: true, title, message, type, onConfirm });
+    };
+
+    useEffect(() => {
+        setParticipants(conversation.participants || []);
+    }, [conversation.conversationId, conversation.participants]);
 
     // Initial fetch of messages
     useEffect(() => {
@@ -34,18 +60,24 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
             socket.emit('join_conversation', { conversationId: conversation.conversationId });
 
             // Mark existing messages as read when entering the chat
-            // We need to mark messages sent by the OTHER user as read
-            if (conversation.otherUser && user) {
+            // We need to mark messages sent by OTHERS as read
+            if (conversation.type === 'direct' && conversation.otherUser && user) {
                 socket.emit('mark_messages_read', {
                     conversationId: conversation.conversationId,
                     senderId: conversation.otherUser._id
+                });
+            } else if (conversation.type === 'group' && user) {
+                // For groups, we could mark all as read OR track per-message. 
+                // Simple implementation: emit generic read event for the room
+                socket.emit('mark_messages_read', {
+                    conversationId: conversation.conversationId
                 });
             }
         }
 
         // Reset typing state when switching conversations
         setIsOtherTyping(false);
-    }, [conversation.conversationId, socket, user, conversation.otherUser]);
+    }, [conversation.conversationId, socket, user, conversation.otherUser, conversation.type]);
 
     // Listen for typing indicator
     useEffect(() => {
@@ -104,8 +136,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
             ));
         };
 
-        // Listen for read receipts
-        const handleMessageRead = (data: { conversationId: string, messageIds: string[] }) => {
+        const handleReadMessages = (data: { conversationId: string, messageIds: string[] }) => {
             if (data.conversationId !== conversation.conversationId) return;
 
             setMessages(prev => prev.map(msg =>
@@ -113,14 +144,59 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
             ));
         };
 
+        const handleMemberAdded = (data: { conversationId: string, userId: string }) => {
+            if (data.conversationId === conversation.conversationId) {
+                setParticipants(prev => {
+                    if (prev.includes(data.userId)) return prev;
+                    return [...prev, data.userId];
+                });
+            }
+        };
+
+        const handleMemberRemoved = (data: { conversationId: string, userId: string }) => {
+            if (data.conversationId === conversation.conversationId) {
+                setParticipants(prev => prev.filter(id => id !== data.userId));
+            }
+        };
+
+        const handleRemovedFromGroup = (data: { conversationId: string }) => {
+            if (data.conversationId === conversation.conversationId) {
+                showAlert(
+                    "Removed from Group",
+                    "You have been removed from this group by the owner.",
+                    'danger',
+                    () => window.location.reload()
+                );
+            }
+        };
+
+        const handleGroupDeleted = (data: { conversationId: string }) => {
+            if (data.conversationId === conversation.conversationId) {
+                showAlert(
+                    "Group Deleted",
+                    "This group has been deleted by the owner.",
+                    'danger',
+                    () => window.location.reload()
+                );
+            }
+        };
+
         socket.on('receive_message', handleReceiveMessage);
         socket.on('message_delivered', handleMessageDelivered);
-        socket.on('message_read', handleMessageRead);
+        socket.on('message_read', handleReadMessages);
+        socket.on('removed_from_group', handleRemovedFromGroup);
+        socket.on('group_deleted', handleGroupDeleted);
+        socket.on('member_added', handleMemberAdded);
+        socket.on('member_removed', handleMemberRemoved);
 
         return () => {
             socket.off('receive_message', handleReceiveMessage);
             socket.off('message_delivered', handleMessageDelivered);
-            socket.off('message_read', handleMessageRead);
+            socket.off('message_read', handleReadMessages);
+            socket.off('removed_from_group', handleRemovedFromGroup);
+            socket.off('group_deleted', handleGroupDeleted);
+            socket.off('member_added', handleMemberAdded);
+            socket.off('member_removed', handleMemberRemoved);
         };
     }, [socket, conversation.conversationId, user?._id]);
 
@@ -221,6 +297,45 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
         });
     };
 
+    const handleAddMember = (userIdToAdd: string) => {
+        if (!socket) return;
+        socket.emit('add_to_group', {
+            conversationId: conversation.conversationId,
+            userId: userIdToAdd
+        }, (response: any) => {
+            if (!response.success) {
+                alert("Failed to add member: " + (response.error || "Unknown error"));
+            }
+        });
+    };
+
+    const handleRemoveMember = (targetUserId: string) => {
+        if (!socket) return;
+        socket.emit("remove_from_group", { conversationId: conversation.conversationId, userId: targetUserId }, (response: any) => {
+            if (!response.success) {
+                showAlert("Action Failed", response.error || "Failed to remove member", 'danger');
+            }
+        });
+    };
+
+    const handleDeleteGroup = () => {
+        if (!socket) return;
+        socket.emit("delete_group", { conversationId: conversation.conversationId }, (response: any) => {
+            if (response.success) {
+                // If onBack is provided (mobile), call it to go back to sidebar
+                if (onBack) {
+                    onBack();
+                } else {
+                    // Force a reload or navigation to clear the chat view
+                    window.location.reload();
+                }
+            } else {
+                showAlert("Deletion Failed", response.error || "Failed to delete group", 'danger');
+            }
+            setIsDeleteConfirmOpen(false); // Close modal after action
+        });
+    };
+
     return (
         <div className="flex flex-col h-full min-h-0 relative bg-chat-pattern overflow-hidden">
             {/* Header - Elevated with depth shadow */}
@@ -232,41 +347,74 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7"></path></svg>
                         </button>
                     )}
-                    <Avatar
-                        src={conversation.otherUser.profilePicture}
-                        alt={conversation.otherUser.username}
-                        size="lg"
-                        isOnline={isOtherUserOnline}
-                    />
+                    {conversation.type === 'group' ? (
+                        <div className="w-12 h-12 bg-primary-600/20 rounded-2xl flex items-center justify-center text-primary-400 border border-primary-500/20">
+                            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                        </div>
+                    ) : (
+                        <Avatar
+                            src={conversation.otherUser?.profilePicture}
+                            alt={conversation.otherUser?.username}
+                            size="lg"
+                            isOnline={isOtherUserOnline}
+                        />
+                    )}
                     <div className="flex flex-col justify-center items-start">
                         <h3 className="text-white font-bold text-base leading-tight text-left">
-                            {conversation.otherUser.username}
+                            {conversation.type === 'group' ? conversation.name : conversation.otherUser?.username}
                         </h3>
                         {/* Dynamic Status */}
                         <div className="flex items-center gap-1.5 mt-0.5">
                             {isOtherTyping ? (
                                 <span className="text-[10px] text-accent-emerald font-semibold tracking-wide italic">typing...</span>
-                            ) : isOtherUserOnline ? (
-                                <>
-                                    <span className="w-1.5 h-1.5 bg-accent-emerald rounded-full animate-pulse shadow-[0_0_4px_rgba(16,185,129,0.5)]"></span>
-                                    <span className="text-[10px] text-accent-emerald font-bold tracking-wide uppercase">Online</span>
-                                </>
+                            ) : conversation.type === 'direct' ? (
+                                isOtherUserOnline ? (
+                                    <>
+                                        <span className="w-1.5 h-1.5 bg-accent-emerald rounded-full animate-pulse shadow-[0_0_4px_rgba(16,185,129,0.5)]"></span>
+                                        <span className="text-[10px] text-accent-emerald font-bold tracking-wide uppercase">Online</span>
+                                    </>
+                                ) : (
+                                    <span className="text-[10px] text-gray-400 tracking-wide">
+                                        {otherUserLastSeen
+                                            ? `Last seen ${new Date(otherUserLastSeen).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                                            : 'Offline'
+                                        }
+                                    </span>
+                                )
                             ) : (
-                                <span className="text-[10px] text-gray-400 tracking-wide">
-                                    {otherUserLastSeen
-                                        ? `Last seen ${new Date(otherUserLastSeen).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-                                        : 'Offline'
-                                    }
-                                </span>
+                                <button
+                                    onClick={() => setIsMemberListModalOpen(true)}
+                                    className="text-[10px] text-gray-400 tracking-wide hover:text-primary-400 transition-colors"
+                                >
+                                    {participants.length} members
+                                </button>
                             )}
                         </div>
                     </div>
                 </div>
-                <div className="flex gap-4 text-gray-400">
-                    <button className="p-2 hover:bg-gray-50 rounded-full transition-colors">
+                <div className="flex gap-2 text-gray-400">
+                    {conversation.type === 'group' && conversation.ownerId === user?._id && (
+                        <div className="flex items-center gap-1">
+                            <button
+                                onClick={() => setIsAddMemberModalOpen(true)}
+                                className="p-2 hover:bg-white/5 rounded-full transition-colors text-primary-400"
+                                title="Add Member"
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" /></svg>
+                            </button>
+                            <button
+                                onClick={() => setIsDeleteConfirmOpen(true)}
+                                className="p-2 hover:bg-red-500/10 rounded-full transition-colors text-red-400"
+                                title="Delete Group"
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                        </div>
+                    )}
+                    <button className="p-2 hover:bg-white/5 rounded-full transition-colors">
                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                     </button>
-                    <button className="p-2 hover:bg-gray-50 rounded-full transition-colors">
+                    <button className="p-2 hover:bg-white/5 rounded-full transition-colors">
                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path></svg>
                     </button>
                 </div>
@@ -277,7 +425,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                 pinnedMessages={messages.filter(msg => msg.isPinned)}
                 onUnpin={handlePinToggle}
                 currentUserId={user?._id}
-                otherUsername={conversation.otherUser.username}
+                otherUsername={conversation.type === 'group' ? (conversation.name || 'Group') : (conversation.otherUser?.username || 'User')}
             />
 
             {/* Messages Area - High Density with Pattern */}
@@ -293,12 +441,18 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                             ? msg.senderId === user?._id
                             : (msg.senderId as any)?._id === user?._id;
 
+                        // For group chats, we should ideally have the sender's username populated.
+                        // If it's a string ID, we fallback to 'Member' for now if not me.
+                        const senderName = isMyMessage
+                            ? user?.username
+                            : (typeof msg.senderId === 'object' ? (msg.senderId as any).username : (conversation.otherUser?.username || 'Member'));
+
                         return (
                             <MessageBubble
                                 key={msg._id || index}
                                 message={msg}
                                 isMyMessage={isMyMessage}
-                                senderName={isMyMessage ? user?.username : conversation.otherUser?.username}
+                                senderName={senderName}
                                 onPinToggle={handlePinToggle}
                                 onReply={(m) => { setReplyingTo(m); inputRef.current?.focus(); }}
                                 onQuoteClick={(id) => {
@@ -324,7 +478,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                     <div className="flex-1 px-3 py-1.5 rounded-lg" style={{ borderLeft: '3px solid #2dd4bf', backgroundColor: 'rgba(255,255,255,0.05)' }}>
                         <p className="text-[11px] font-semibold text-left" style={{ color: '#2dd4bf' }}>
                             {typeof replyingTo.senderId === 'string'
-                                ? (replyingTo.senderId === user?._id ? 'You' : conversation.otherUser?.username)
+                                ? (replyingTo.senderId === user?._id ? 'You' : (conversation.type === 'group' ? 'Member' : conversation.otherUser?.username))
                                 : (replyingTo.senderId as any)?.username || 'User'
                             }
                         </p>
@@ -397,6 +551,42 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                     </form>
                 </div>
             </div>
+            {/* Add Member Modal */}
+            <AddMemberModal
+                isOpen={isAddMemberModalOpen}
+                onClose={() => setIsAddMemberModalOpen(false)}
+                conversation={conversation}
+                onAddMember={handleAddMember}
+            />
+
+            <MemberListModal
+                isOpen={isMemberListModalOpen}
+                onClose={() => setIsMemberListModalOpen(false)}
+                conversation={{ ...conversation, participants }}
+                onRemoveMember={handleRemoveMember}
+            />
+
+            <ConfirmModal
+                isOpen={isDeleteConfirmOpen}
+                onClose={() => setIsDeleteConfirmOpen(false)}
+                onConfirm={handleDeleteGroup}
+                title="Delete Group?"
+                message="Are you SURE you want to delete this group? All messages and data will be permanently removed for EVERYONE. This action cannot be undone."
+                confirmText="Delete Group"
+                cancelText="Keep Group"
+                type="danger"
+            />
+
+            <ConfirmModal
+                isOpen={alertConfig.isOpen}
+                onClose={() => setAlertConfig(prev => ({ ...prev, isOpen: false }))}
+                onConfirm={alertConfig.onConfirm || (() => { })}
+                title={alertConfig.title}
+                message={alertConfig.message}
+                confirmText="OK"
+                showCancel={false}
+                type={alertConfig.type}
+            />
         </div>
     );
 };

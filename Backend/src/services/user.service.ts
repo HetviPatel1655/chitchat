@@ -36,3 +36,28 @@ export const FindUser = async ({
     }
 }
 
+export const searchUsers = async (searchTerm: string, excludeUserId: string) => {
+    try {
+        const users = await UsersModel.find({
+            _id: { $ne: excludeUserId },
+            username: { $regex: searchTerm, $options: 'i' }
+        })
+            .select("_id username email profilePicture")
+            .limit(10);
+        return users;
+    } catch (error) {
+        throw new APIError(StatusCodes.INTERNAL_SERVER_ERROR, "Failed to search users");
+    }
+}
+
+export const searchUsersByIds = async (ids: string[]) => {
+    try {
+        const users = await UsersModel.find({
+            _id: { $in: ids }
+        }).select("_id username email profilePicture");
+        return users;
+    } catch (error) {
+        throw new APIError(StatusCodes.INTERNAL_SERVER_ERROR, "Failed to fetch users by IDs");
+    }
+}
+
