@@ -83,6 +83,10 @@ export class GrpsService {
         }).select("_id name lastMessage createdAt").lean();
     }
 
+    static async Listallgrps() {
+        return await ConversationsModel.find({ type: "group" }).select("_id name participants lastMessage createdAt").lean();
+    }
+
     static async addMember(conversationId: string, userId: string, adminId: string) {
         const session = await mongoose.startSession();
         session.startTransaction();

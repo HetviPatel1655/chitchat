@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { GrpsService } from "../services/grps.service";
 import { StatusCodes } from "http-status-codes";
-import { APIError } from "../error/apierror.js";
+import { APIError } from "../error/apierror";
 
 export const viewgrpscontroller = async (req: Request, res: Response) => {
     const groups = await GrpsService.Listallgrps();
@@ -28,5 +28,5 @@ export const leavegroupcontroller = async (req: Request, res: Response) => {
 }
 
 export const deletegroupcontroller = async (req: Request, res: Response) => {
-    
+
 }
