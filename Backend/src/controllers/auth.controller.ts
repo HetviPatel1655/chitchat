@@ -47,6 +47,10 @@ export const logincontroller = async (req: Request, res: Response) => {
     const payload = req.body;
     console.log("Login Payload:", payload);
 
+    if (!payload.username || !payload.password) {
+        throw new APIError(StatusCodes.BAD_REQUEST, "Username and password are required");
+    }
+
     let query: any = {};
     if (payload.username.includes('@')) {
         query = { email: payload.username };

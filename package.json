@@ -5,6 +5,10 @@
     "tailwindcss": "^4.1.18"
   },
   "dependencies": {
-    "lucide-react": "^0.563.0"
+    "@types/multer": "^2.0.0",
+    "cloudinary": "^1.41.3",
+    "lucide-react": "^0.563.0",
+    "multer": "^2.0.2",
+    "multer-storage-cloudinary": "^4.0.0"
   }
 }

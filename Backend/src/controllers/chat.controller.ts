@@ -51,3 +51,15 @@ export const getConversations = async (req: Request, res: Response) => {
 
 // NOTE: Pin/unpin functionality is handled via WebSocket events (toggle_pin_message)
 // See socket.service.ts for the implementation
+
+export const markAsUnread = async (req: Request, res: Response) => {
+    const { conversationId } = req.params;
+    const userId = req.userId;
+
+    await chatservice.markConversationAsUnread(userId!, conversationId);
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Conversation marked as unread"
+    });
+};

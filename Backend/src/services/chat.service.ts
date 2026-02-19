@@ -77,7 +77,12 @@ export class chatservice {
         senderId: string,
         conversationId: string,
         content: string,
-        replyToId?: string
+        replyToId?: string,
+        filename?: string,
+        fileurl?: string,
+        filesize?: number,
+        mimetype?: string,
+        messagetype?: string
     ) {
         try {
             // Verify conversation exists and user is participant
@@ -92,26 +97,41 @@ export class chatservice {
                 throw new APIError(StatusCodes.FORBIDDEN, "You are not a participant of this conversation");
             }
 
-            console.log(`Saving message: from ${senderId} to conv ${conversationId}. Content: "${content.substring(0, 20)}..."`);
+            const safeContent = content || ""; // Ensure content is string
+            console.log(`Saving message: from ${senderId} to conv ${conversationId}. Content: "${safeContent.substring(0, 20)}..."`);
             // Save message
             const message = await MsgsModel.create({
                 conversationId,
                 senderId,
-                content,
+                content: safeContent,
                 status: "sent",
-                ...(replyToId && { replyToId })
+                ...(replyToId && { replyToId }),
+                fileName: filename,
+                fileUrl: fileurl,
+                fileSize: filesize,
+                mimeType: mimetype,
+                messageType: messagetype
             });
+
+            // Determine preview content for conversation list
+            let previewContent = content;
+            if (!previewContent) {
+                if (messagetype === 'image') previewContent = '📷 Image';
+                else if (messagetype === 'video') previewContent = '🎥 Video';
+                else if (filename) previewContent = `📄 ${filename}`;
+                else previewContent = 'File';
+            }
 
             // Update conversation's last message and touch updatedAt
             await ConversationsModel.findByIdAndUpdate(conversationId, {
                 lastMessage: {
-                    content,
+                    content: previewContent,
                     senderId,
                     timestamp: new Date()
                 },
                 updatedAt: new Date() // Force touch for sorting
             });
-            console.log(`✅ Message saved successfully. ID: ${message._id}. Collection: ${MsgsModel.collection.name}`);
+            //console.log(`✅ Message saved successfully. ID: ${message._id}. Collection: ${MsgsModel.collection.name}`);
 
             return message;
         } catch (error) {
@@ -147,7 +167,7 @@ export class chatservice {
             }
 
             // Get messages
-            console.log(`Fetching messages for conv: ${conversationId}, user: ${userId}`);
+            // console.log(`Fetching messages for conv: ${conversationId}, user: ${userId}`);
             const skip = (page - 1) * limit;
             const messages = await MsgsModel.find({
                 conversationId: new mongoose.Types.ObjectId(conversationId)
@@ -158,14 +178,15 @@ export class chatservice {
                     select: "content senderId",
                     populate: { path: "senderId", select: "username" }
                 })
+                .populate("reactions.userId", "username")
                 .sort({ timestamp: -1 })
                 .skip(skip)
                 .limit(limit)
                 .lean();
 
-            console.log(`Found ${messages.length} messages for conv ${conversationId}`);
+            //console.log(`Found ${messages.length} messages for conv ${conversationId}`);
             const totalMessages = await MsgsModel.countDocuments({ conversationId });
-            console.log(`Total messages in DB for this conv: ${totalMessages}`);
+            // console.log(`Total messages in DB for this conv: ${totalMessages}`);
 
             return {
                 messages: messages.reverse(),
@@ -208,7 +229,7 @@ export class chatservice {
                 .sort({ updatedAt: -1, createdAt: -1 })
                 .toArray();
 
-            console.log(`🔍 [getConversations] Found ${conversations.length} hits via raw query.`);
+            // console.log(`🔍 [getConversations] Found ${conversations.length} hits via raw query.`);
 
             // Manual population since we bypassed Mongoose
             const populatedConversations = await Promise.all(conversations.map(async (conv) => {
@@ -223,13 +244,18 @@ export class chatservice {
                         .sort({ timestamp: -1 })
                         .lean();
                     if (latestMsg) {
-                        lastMsgContent = latestMsg.content;
+                        if (latestMsg.content) lastMsgContent = latestMsg.content;
+                        else if (latestMsg.messageType === 'image') lastMsgContent = '📷 Image';
+                        else if (latestMsg.messageType === 'video') lastMsgContent = '🎥 Video';
+                        else if (latestMsg.fileName) lastMsgContent = `📄 ${latestMsg.fileName}`;
+                        else lastMsgContent = 'File';
+
                         lastMsgTime = latestMsg.timestamp;
 
                         // Async healing - don't wait for this
                         ConversationsModel.findByIdAndUpdate(conv._id, {
                             lastMessage: {
-                                content: latestMsg.content,
+                                content: lastMsgContent,
                                 senderId: latestMsg.senderId,
                                 timestamp: latestMsg.timestamp
                             }
@@ -256,7 +282,10 @@ export class chatservice {
                         ownerId: groupMetadata?.owner?.toString(),
                         lastMessage: lastMsgContent || "No messages yet",
                         lastMessageTime: lastMsgTime,
-                        unreadCount
+                        unreadCount,
+                        isManuallyUnread: (readStatus as any)?.isManuallyUnread || false,
+                        isPinned: (readStatus as any)?.isPinned || false,
+                        pinnedAt: (readStatus as any)?.pinnedAt
                     };
                 }
 
@@ -281,7 +310,10 @@ export class chatservice {
                     otherUser: otherUser || { _id: otherParticipantId, username: "User" },
                     lastMessage: lastMsgContent || "No messages yet",
                     lastMessageTime: lastMsgTime,
-                    unreadCount
+                    unreadCount,
+                    isManuallyUnread: (readStatus as any)?.isManuallyUnread || false,
+                    isPinned: (readStatus as any)?.isPinned || false,
+                    pinnedAt: (readStatus as any)?.pinnedAt
                 };
             }));
 
@@ -366,6 +398,19 @@ export class chatservice {
         }
     }
 
+    static async markConversationAsUnread(userId: string, conversationId: string) {
+        try {
+            await ReadStatusModel.findOneAndUpdate(
+                { userId, conversationId },
+                { isManuallyUnread: true },
+                { upsert: true, new: true }
+            );
+            return { success: true };
+        } catch (error) {
+            console.error("Error marking conversation as unread:", error);
+            throw new APIError(StatusCodes.INTERNAL_SERVER_ERROR, "Failed to mark as unread");
+        }
+    }
     // Mark messages in a conversation as read
     static async markMessagesAsRead(userId: string, conversationId: string) {
         try {
@@ -386,15 +431,95 @@ export class chatservice {
             // (This handles cases where messages were already read or for group sync)
             await ReadStatusModel.findOneAndUpdate(
                 { userId, conversationId },
-                { lastReadAt: new Date() },
+                {
+                    lastReadAt: new Date(),
+                    isManuallyUnread: false
+                },
                 { upsert: true, new: true }
             );
-            console.log(`Updated ReadStatus for user ${userId} in conv ${conversationId}`);
+            //console.log(`Updated ReadStatus for user ${userId} in conv ${conversationId}`);
 
             return messages;
         } catch (error) {
             console.error("Error marking messages as read:", error);
             return [];
+        }
+    }
+
+    static async toggleReaction(userId: string, messageId: string, emoji: string) {
+        try {
+            const message = await MsgsModel.findById(messageId);
+            if (!message) {
+                throw new APIError(StatusCodes.NOT_FOUND, "Message not found");
+            }
+
+            // Check if user already reacted
+            const existingReactionIndex = message.reactions?.findIndex(
+                (r: any) => r.userId.toString() === userId
+            );
+
+            if (message.reactions && existingReactionIndex !== -1 && existingReactionIndex !== undefined) {
+                const existingReaction = message.reactions[existingReactionIndex];
+
+                if (existingReaction.emoji === emoji) {
+                    // Toggle off (remove)
+                    message.reactions.splice(existingReactionIndex, 1);
+                } else {
+                    // Update emoji
+                    message.reactions[existingReactionIndex].emoji = emoji;
+                }
+            } else {
+                // Add new reaction
+                if (!message.reactions) message.reactions = [];
+                message.reactions.push({ emoji, userId: new mongoose.Types.ObjectId(userId) });
+            }
+
+            await message.save();
+
+            // Return fully populated message
+            return await MsgsModel.findById(messageId)
+                .populate("senderId", "username")
+                .populate("reactions.userId", "username")
+                .lean();
+
+        } catch (error) {
+            if (error instanceof APIError) throw error;
+            throw new APIError(StatusCodes.INTERNAL_SERVER_ERROR, "Failed to toggle reaction");
+        }
+    }
+
+    // Toggle pin status of a conversation for a user
+    static async toggleConversationPin(userId: string, conversationId: string) {
+        try {
+            // Find existing status or create new one
+            let readStatus = await ReadStatusModel.findOne({ userId, conversationId });
+
+            if (!readStatus) {
+                readStatus = await ReadStatusModel.create({
+                    userId,
+                    conversationId,
+                    isPinned: true,
+                    pinnedAt: new Date()
+                });
+            } else {
+                readStatus.isPinned = !readStatus.isPinned;
+                if (readStatus.isPinned) {
+                    readStatus.pinnedAt = new Date();
+                } else {
+                    readStatus.pinnedAt = undefined;
+                }
+                await readStatus.save();
+            }
+
+            console.log(`📌 Conversation ${conversationId} pin toggled for user ${userId}. New status: ${readStatus.isPinned}`);
+            return {
+                conversationId,
+                isPinned: readStatus.isPinned
+            };
+
+        } catch (error) {
+            console.error("Error toggling conversation pin:", error);
+            throw new APIError(StatusCodes.INTERNAL_SERVER_ERROR, "Failed to toggle conversation pin");
         }
     }
 }

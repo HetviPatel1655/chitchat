@@ -1,14 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
-import api from '../../services/api';
+import api, { uploadFile } from '../../services/api';
 import type { Conversation, Message } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useSocket } from '../../context/SocketContext';
+import { formatMessageDate } from '../../utils/stringUtils';
+
 import MessageBubble from '../UI/MessageBubble';
 import Avatar from '../UI/Avatar';
 import PinnedMessagesBar from '../UI/PinnedMessagesBar';
 import AddMemberModal from './AddMemberModal';
 import MemberListModal from './MemberListModal';
 import ConfirmModal from '../UI/ConfirmModal';
+import ImageModal from './ImageModal';
+import FilePreviewModal from './FilePreviewModal';
 
 interface ChatWindowProps {
     conversation: Conversation;
@@ -26,12 +30,22 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
     const { socket } = useSocket();
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
-    const [isOtherTyping, setIsOtherTyping] = useState(false);
-    const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
+    const typingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
     const [isMemberListModalOpen, setIsMemberListModalOpen] = useState(false);
     const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+
+    // Pagination State
+    const [page, setPage] = useState(1);
+    const [hasMore, setHasMore] = useState(true);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [showScrollBottom, setShowScrollBottom] = useState(false);
+    const [selectedImage, setSelectedImage] = useState<string | null>(null);
+    const [selectedFile, setSelectedFile] = useState<{ url: string; name: string; type: string } | null>(null);
+    const scrollContainerRef = useRef<HTMLDivElement>(null); // Ref for scroll container
+
     const [alertConfig, setAlertConfig] = useState<{
         isOpen: boolean;
         title: string;
@@ -55,7 +69,9 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
     // Initial fetch of messages
     useEffect(() => {
         if (socket && conversation.conversationId) {
-            fetchMessages();
+            setPage(1); // Reset page
+            setHasMore(true);
+            fetchMessages(1);
             // Join this conversation room
             socket.emit('join_conversation', { conversationId: conversation.conversationId });
 
@@ -76,30 +92,62 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
         }
 
         // Reset typing state when switching conversations
-        setIsOtherTyping(false);
+        setTypingUsers(new Set());
+        typingTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
+        typingTimeoutsRef.current.clear();
     }, [conversation.conversationId, socket, user, conversation.otherUser, conversation.type]);
 
     // Listen for typing indicator
     useEffect(() => {
         if (!socket) return;
 
-        const handleUserTyping = (data: { userId: string; conversationId: string; isTyping: boolean }) => {
-            if (data.conversationId !== conversation.conversationId) return;
+        const handleUserTyping = (data: { userId: string; username: string; conversationId: string; isTyping: boolean }) => {
+            console.log('FrontTyping Event Received:', data);
+            console.log('Current Conv ID:', conversation.conversationId);
+
+            if (data.conversationId !== conversation.conversationId) {
+                console.log('Mismatch Conv ID, ignoring.');
+                return;
+            }
             if (data.userId === user?._id) return; // Ignore own typing
 
-            setIsOtherTyping(data.isTyping);
+            setTypingUsers(prev => {
+                const newSet = new Set(prev);
+                if (data.isTyping) {
+                    newSet.add(data.username); // Use username for display
 
-            // Safety timeout: auto-clear after 3s in case stop event is lost
-            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-            if (data.isTyping) {
-                typingTimeoutRef.current = setTimeout(() => setIsOtherTyping(false), 3000);
-            }
+                    // Clear existing timeout for this user
+                    if (typingTimeoutsRef.current.has(data.username)) {
+                        clearTimeout(typingTimeoutsRef.current.get(data.username)!);
+                    }
+
+                    // Set new timeout to remove user after 10s
+                    const timeout = setTimeout(() => {
+                        setTypingUsers(current => {
+                            const updated = new Set(current);
+                            updated.delete(data.username);
+                            return updated;
+                        });
+                        typingTimeoutsRef.current.delete(data.username);
+                    }, 10000);
+
+                    typingTimeoutsRef.current.set(data.username, timeout);
+                } else {
+                    newSet.delete(data.username);
+                    if (typingTimeoutsRef.current.has(data.username)) {
+                        clearTimeout(typingTimeoutsRef.current.get(data.username)!);
+                        typingTimeoutsRef.current.delete(data.username);
+                    }
+                }
+                return newSet;
+            });
         };
 
         socket.on('user_typing', handleUserTyping);
         return () => {
             socket.off('user_typing', handleUserTyping);
-            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+            typingTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
+            typingTimeoutsRef.current.clear();
         };
     }, [socket, conversation.conversationId, user?._id]);
 
@@ -205,44 +253,72 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
         if (!socket) return;
 
         const handleMessagePinned = (data: { messageId: string; conversationId: string; isPinned: boolean }) => {
-            console.log('Received message_pinned event:', data);
             if (data.conversationId === conversation.conversationId) {
-                console.log('Updating message pin state for:', data.messageId, 'to:', data.isPinned);
                 setMessages((prev) =>
                     prev.map((msg) =>
                         msg._id === data.messageId ? { ...msg, isPinned: data.isPinned } : msg
                     )
                 );
-            } else {
-                console.log('Ignoring pin event for different conversation');
+            }
+        };
+
+        const handleMessageReactionUpdate = (data: { messageId: string, conversationId: string, reactions: any[] }) => {
+            if (data.conversationId === conversation.conversationId) {
+                setMessages((prev) =>
+                    prev.map((msg) =>
+                        msg._id === data.messageId ? { ...msg, reactions: data.reactions } : msg
+                    )
+                );
             }
         };
 
         socket.on('message_pinned', handleMessagePinned);
+        socket.on('message_reaction_update', handleMessageReactionUpdate);
 
         return () => {
             socket.off('message_pinned', handleMessagePinned);
+            socket.off('message_reaction_update', handleMessageReactionUpdate);
         };
     }, [socket, conversation.conversationId]);
 
-    const fetchMessages = async () => {
+    const fetchMessages = async (pageNum = 1) => {
         try {
-            const response = await api.get(`/chat/messages/${conversation.conversationId}`);
-            const msgs = response.data.data.messages.map((msg: any) => ({
+            if (pageNum > 1) setIsLoadingMore(true);
+
+            const response = await api.get(`/chat/messages/${conversation.conversationId}`, {
+                params: { page: pageNum, limit: 20 }
+            });
+
+            const { messages: newMessages, totalPages } = response.data.data;
+            const formattedMsgs = newMessages.map((msg: any) => ({
                 ...msg,
                 replyTo: msg.replyToId || undefined,
                 replyToId: undefined,
             }));
-            setMessages(msgs);
-            scrollToBottom();
+
+            if (pageNum === 1) {
+                setMessages(formattedMsgs);
+                setHasMore(totalPages > 1);
+                // Instant scroll on initial load
+                scrollToBottom("auto");
+            } else {
+                // Prepend older messages
+                setMessages(prev => [...formattedMsgs, ...prev]);
+                setHasMore(pageNum < totalPages);
+                setIsLoadingMore(false);
+            }
+
+            setPage(pageNum);
+
         } catch (err) {
             console.error("Failed to fetch messages", err);
+            setIsLoadingMore(false);
         }
     };
 
-    const scrollToBottom = () => {
+    const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
         setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            messagesEndRef.current?.scrollIntoView({ behavior });
         }, 100);
     };
 
@@ -318,6 +394,44 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
         });
     };
 
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !socket) return;
+
+        try {
+            // 1. Upload file
+            const response = await uploadFile(file);
+            const { url, originalName, mimetype, size } = response.data.data;
+
+            // 2. Emit socket message
+            socket.emit('send_message', {
+                conversationId: conversation.conversationId,
+                content: '', // No text content for file message
+                fileUrl: url,
+                fileName: originalName || file.name, // Use original name from server or file object
+                fileSize: size,
+                mimeType: mimetype,
+                messageType: mimetype.startsWith('image/') ? 'image' : mimetype.startsWith('video/') ? 'video' : 'file'
+            }, (response: any) => {
+                if (response.success) {
+                    // Message will be received via socket 'receive_message' event
+                    // So we don't need to add it manually here to avoid duplicates
+                    scrollToBottom();
+                } else {
+                    alert("Failed to send file");
+                }
+            });
+        } catch (error) {
+            console.error("File upload failed:", error);
+            alert("Failed to upload file");
+        } finally {
+            // Reset input
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
     const handleDeleteGroup = () => {
         if (!socket) return;
         socket.emit("delete_group", { conversationId: conversation.conversationId }, (response: any) => {
@@ -364,34 +478,44 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                             {conversation.type === 'group' ? conversation.name : conversation.otherUser?.username}
                         </h3>
                         {/* Dynamic Status */}
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                            {isOtherTyping ? (
-                                <span className="text-[10px] text-accent-emerald font-semibold tracking-wide italic">typing...</span>
-                            ) : conversation.type === 'direct' ? (
-                                isOtherUserOnline ? (
-                                    <>
-                                        <span className="w-1.5 h-1.5 bg-accent-emerald rounded-full animate-pulse shadow-[0_0_4px_rgba(16,185,129,0.5)]"></span>
-                                        <span className="text-[10px] text-accent-emerald font-bold tracking-wide uppercase">Online</span>
-                                    </>
-                                ) : (
-                                    <span className="text-[10px] text-gray-400 tracking-wide">
-                                        {otherUserLastSeen
-                                            ? `Last seen ${new Date(otherUserLastSeen).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-                                            : 'Offline'
-                                        }
-                                    </span>
-                                )
+                        <div className="flex items-center gap-1.5 mt-0.5 h-4">
+                            {typingUsers.size > 0 ? (
+                                <span className="text-[12px] text-accent-emerald font-semibold tracking-wide italic animate-pulse">
+                                    {typingUsers.size === 1
+                                        ? `${Array.from(typingUsers)[0]} is typing...`
+                                        : typingUsers.size <= 3
+                                            ? `${Array.from(typingUsers).join(", ")} are typing...`
+                                            : "Several people are typing..."}
+                                </span>
                             ) : (
-                                <button
-                                    onClick={() => setIsMemberListModalOpen(true)}
-                                    className="text-[10px] text-gray-400 tracking-wide hover:text-primary-400 transition-colors"
-                                >
-                                    {participants.length} members
-                                </button>
+                                conversation.type === 'direct' ? (
+                                    isOtherUserOnline ? (
+                                        <>
+                                            <span className="w-1.5 h-1.5 bg-accent-emerald rounded-full animate-pulse shadow-[0_0_4px_rgba(16,185,129,0.5)]"></span>
+                                            <span className="text-[12px] text-accent-emerald font-bold tracking-wide uppercase">Online</span>
+                                        </>
+                                    ) : (
+                                        <span className="text-[12px] text-gray-400 tracking-wide">
+                                            {otherUserLastSeen
+                                                ? `Last seen ${new Date(otherUserLastSeen).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                                                : 'Offline'
+                                            }
+                                        </span>
+                                    )
+                                ) : (
+                                    <button
+                                        onClick={() => setIsMemberListModalOpen(true)}
+                                        className="text-[12px] text-gray-400 tracking-wide hover:text-primary-400 transition-colors"
+                                    >
+                                        {participants.length} members
+                                    </button>
+                                )
                             )}
                         </div>
+
                     </div>
                 </div>
+
                 <div className="flex gap-2 text-gray-400">
                     {conversation.type === 'group' && conversation.ownerId === user?._id && (
                         <div className="flex items-center gap-1">
@@ -429,17 +553,51 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
             />
 
             {/* Messages Area - High Density with Pattern */}
-            <div className="flex-1 overflow-y-auto px-5 py-6 custom-scrollbar bg-chat-pattern">
-                <div className="flex flex-col gap-0.5 max-w-4xl mx-auto w-full">
-                    {/* Compact Date Separator */}
-                    <div className="flex justify-center mb-6">
-                        <span className="text-[10px] text-gray-400 px-3 py-1 bg-white/5 rounded-md uppercase tracking-[1.5px] font-bold border border-white/5 backdrop-blur-sm">Today</span>
-                    </div>
+            <div
+                ref={scrollContainerRef}
+                className="flex-1 overflow-y-auto px-5 py-6 custom-scrollbar bg-chat-pattern"
+                onScroll={(e) => {
+                    const target = e.target as HTMLDivElement;
+                    const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 300;
+                    setShowScrollBottom(!isNearBottom);
 
+                    if (target.scrollTop === 0 && hasMore && !isLoadingMore) {
+                        // Save current scroll height to restore position after render
+                        const oldScrollHeight = target.scrollHeight;
+                        fetchMessages(page + 1).then(() => {
+                            // Restore scroll position roughly
+                            // Note: Perfect restoration requires useLayoutEffect or similar, 
+                            // but simpler requestAnimationFrame usually works well enough for text
+                            requestAnimationFrame(() => {
+                                target.scrollTop = target.scrollHeight - oldScrollHeight;
+                            });
+                        });
+                    }
+                }}
+            >
+                <div className="flex flex-col gap-0.5 max-w-4xl mx-auto w-full">
+                    {isLoadingMore && (
+                        <div className="flex justify-center my-4">
+                            <svg className="animate-spin h-5 w-5 text-primary-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                        </div>
+                    )}
+                    {!hasMore && messages.length > 0 && (
+                        <div className="flex justify-center my-4">
+                            <span className="text-xs text-gray-500 bg-white/5 px-3 py-1 rounded-full uppercase tracking-wider font-medium">Start of conversation</span>
+                        </div>
+                    )}
                     {messages.map((msg, index) => {
                         const isMyMessage = typeof msg.senderId === 'string'
                             ? msg.senderId === user?._id
                             : (msg.senderId as any)?._id === user?._id;
+
+                        // Calculate Date Separator
+                        const prevMsg = messages[index - 1];
+                        const showDateSeparator = !prevMsg || new Date(msg.timestamp).toDateString() !== new Date(prevMsg.timestamp).toDateString();
+                        const dateLabel = showDateSeparator ? formatMessageDate(msg.timestamp) : '';
 
                         // For group chats, we should ideally have the sender's username populated.
                         // If it's a string ID, we fallback to 'Member' for now if not me.
@@ -448,22 +606,32 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                             : (typeof msg.senderId === 'object' ? (msg.senderId as any).username : (conversation.otherUser?.username || 'Member'));
 
                         return (
-                            <MessageBubble
-                                key={msg._id || index}
-                                message={msg}
-                                isMyMessage={isMyMessage}
-                                senderName={senderName}
-                                onPinToggle={handlePinToggle}
-                                onReply={(m) => { setReplyingTo(m); inputRef.current?.focus(); }}
-                                onQuoteClick={(id) => {
-                                    const el = document.getElementById(`msg-${id}`);
-                                    if (el) {
-                                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                        el.classList.add('ring-2', 'ring-primary-400/50');
-                                        setTimeout(() => el.classList.remove('ring-2', 'ring-primary-400/50'), 2000);
-                                    }
-                                }}
-                            />
+                            <div key={msg._id || index} className="w-full">
+                                {showDateSeparator && (
+                                    <div className="flex justify-center my-6">
+                                        <span className="text-[10px] text-gray-400 px-3 py-1 bg-white/5 rounded-md uppercase tracking-[1.5px] font-bold border border-white/5 backdrop-blur-sm shadow-sm">
+                                            {dateLabel}
+                                        </span>
+                                    </div>
+                                )}
+                                <MessageBubble
+                                    message={msg}
+                                    isMyMessage={isMyMessage}
+                                    senderName={senderName}
+                                    onPinToggle={handlePinToggle}
+                                    onReply={(m) => { setReplyingTo(m); inputRef.current?.focus(); }}
+                                    onImageClick={(url) => setSelectedImage(url)}
+                                    onFileClick={(url, name, type) => setSelectedFile({ url, name, type })}
+                                    onQuoteClick={(id) => {
+                                        const el = document.getElementById(`msg-${id}`);
+                                        if (el) {
+                                            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                            el.classList.add('ring-2', 'ring-primary-400/50');
+                                            setTimeout(() => el.classList.remove('ring-2', 'ring-primary-400/50'), 2000);
+                                        }
+                                    }}
+                                />
+                            </div>
                         );
                     })}
 
@@ -471,6 +639,19 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                     <div ref={messagesEndRef} />
                 </div>
             </div>
+
+            {/* Scroll to Bottom Button */}
+            {showScrollBottom && (
+                <button
+                    onClick={() => scrollToBottom("smooth")}
+                    className="absolute bottom-24 right-6 p-2 bg-surface-dark border border-white/10 text-primary-400 rounded-full shadow-lg hover:bg-surface-light transition-all z-20 animate-bounce-in"
+                >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
+                    </svg>
+                    {/* Unread count badge could go here if needed */}
+                </button>
+            )}
 
             {/* Reply Preview Bar */}
             {replyingTo && (
@@ -501,8 +682,22 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
             <div className="px-6 py-4 z-10 w-full" style={{ backgroundColor: '#0a1628', borderTop: '2px solid rgba(255,255,255,0.06)', boxShadow: '0 -4px 20px rgba(0,0,0,0.3)' }}>
                 <div className="max-w-4xl mx-auto w-full relative">
                     <form onSubmit={handleSendMessage} className="flex items-center gap-3">
+                        {/* Hidden File Input */}
+                        <input
+                            type="file"
+                            ref={fileInputRef}
+                            className="hidden"
+                            // Accept all files
+                            onChange={handleFileSelect}
+                        />
+
                         {/* Attachment Button */}
-                        <button type="button" className="p-2.5 text-gray-500 hover:text-primary-400 hover:bg-white/5 rounded-xl transition-all">
+                        <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="p-2.5 text-gray-500 hover:text-primary-400 hover:bg-white/5 rounded-xl transition-all"
+                            title="Attach file"
+                        >
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
                         </button>
 
@@ -522,7 +717,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                                         if (debounceRef.current) clearTimeout(debounceRef.current);
                                         debounceRef.current = setTimeout(() => {
                                             socket.emit('typing', { conversationId: conversation.conversationId, isTyping: false });
-                                        }, 2000);
+                                        }, 10000);
                                     } else if (socket) {
                                         // Input cleared — stop typing immediately
                                         if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -551,6 +746,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                     </form>
                 </div>
             </div>
+
             {/* Add Member Modal */}
             <AddMemberModal
                 isOpen={isAddMemberModalOpen}
@@ -586,6 +782,20 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                 confirmText="OK"
                 showCancel={false}
                 type={alertConfig.type}
+            />
+
+            <ImageModal
+                isOpen={!!selectedImage}
+                imageUrl={selectedImage}
+                onClose={() => setSelectedImage(null)}
+            />
+
+            <FilePreviewModal
+                isOpen={!!selectedFile}
+                fileUrl={selectedFile?.url || null}
+                fileName={selectedFile?.name || null}
+                fileType={selectedFile?.type || null}
+                onClose={() => setSelectedFile(null)}
             />
         </div>
     );

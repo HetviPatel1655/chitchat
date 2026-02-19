@@ -11,9 +11,31 @@ import { StartServer } from "./src/utility/StartServer";
 import { rootRouter } from "./src/routes/index";
 import { SocketService } from "./src/services/socket.service";
 
+const path = require("path");
+
 const app = express();
 const port = 3000;
 const server = http.createServer(app);
+
+app.use(cors({
+    origin: process.env.FRONTEND_URL || true,
+    credentials: true,
+    exposedHeaders: ["set-cookie"]
+}));
+
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+
+
+app.use(rootRouter);
+
+app.all("*", (req, res) => {
+    console.log("Route not found");
+    res.status(404).json({ message: "Route not found" });
+});
+
 const io = new Server(server, {
     cors: {
         origin: process.env.FRONTEND_URL || "*",
@@ -21,13 +43,6 @@ const io = new Server(server, {
         credentials: true
     }
 });
-
-app.use(cors({
-    origin: process.env.FRONTEND_URL || true,
-    credentials: true
-}));
-app.use(express.json());
-app.use(rootRouter);
 
 // Initialize Socket.IO
 SocketService.initializeSocket(io);

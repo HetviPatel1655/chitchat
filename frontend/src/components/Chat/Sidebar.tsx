@@ -49,6 +49,27 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
         message: '',
     });
 
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, conversationId: string } | null>(null);
+
+    // Close context menu on click outside
+    useEffect(() => {
+        const handleClick = () => setContextMenu(null);
+        document.addEventListener('click', handleClick);
+        return () => document.removeEventListener('click', handleClick);
+    }, []);
+
+    const handleMarkUnread = (conversationId: string) => {
+        // Optimistic update
+        setConversations(prev => prev.map(c =>
+            c.conversationId === conversationId
+                ? { ...c, isManuallyUnread: true }
+                : c
+        ));
+        setContextMenu(null);
+
+        socket?.emit("mark_conversation_unread", { conversationId });
+    };
+
     const showAlert = (title: string, message: string, type: 'danger' | 'info' = 'info') => {
         setAlertConfig({ isOpen: true, title, message, type });
     };
@@ -100,10 +121,18 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
             if (data.readerId === user?._id) {
                 setConversations(prev => prev.map(c =>
                     c.conversationId === data.conversationId
-                        ? { ...c, unreadCount: 0 } as any
+                        ? { ...c, unreadCount: 0, isManuallyUnread: false } as any
                         : c
                 ));
             }
+        };
+
+        const handleConversationUnread = (data: { conversationId: string }) => {
+            setConversations(prev => prev.map(c =>
+                c.conversationId === data.conversationId
+                    ? { ...c, isManuallyUnread: true }
+                    : c
+            ));
         };
 
         const handleGroupCreated = (group: any) => {
@@ -142,6 +171,7 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
 
         socket.on('receive_message', handleReceiveMessage);
         socket.on('message_read', handleMessageRead);
+        socket.on('conversation_unread', handleConversationUnread);
         socket.on('group_created', handleGroupCreated);
         socket.on('group_deleted', handleGroupDeleted);
         socket.on('removed_from_group', handleRemovedFromGroup);
@@ -151,6 +181,7 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
         return () => {
             socket.off('receive_message', handleReceiveMessage);
             socket.off('message_read', handleMessageRead);
+            socket.off('conversation_unread', handleConversationUnread);
             socket.off('group_created', handleGroupCreated);
             socket.off('group_deleted', handleGroupDeleted);
             socket.off('removed_from_group', handleRemovedFromGroup);
@@ -267,13 +298,51 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
             return c.otherUser?.username.toLowerCase().includes(searchTerm.toLowerCase());
         })
         .sort((a, b) => {
+            if (a.isPinned && !b.isPinned) return -1;
+            if (!a.isPinned && b.isPinned) return 1;
+
+            if (a.isPinned && b.isPinned) {
+                // If both pinned, sort by pinnedAt (newest pin first)
+                const pinTimeA = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0;
+                const pinTimeB = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0;
+                return pinTimeB - pinTimeA;
+            }
+
             const timeA = new Date(a.lastMessageTime).getTime();
             const timeB = new Date(b.lastMessageTime).getTime();
             return timeB - timeA;
         });
 
+    const handlePinConversation = (conversationId: string) => {
+        setConversations(prev => prev.map(c =>
+            c.conversationId === conversationId
+                ? { ...c, isPinned: !c.isPinned, pinnedAt: !c.isPinned ? new Date().toISOString() : undefined }
+                : c
+        ));
+        setContextMenu(null);
+        socket?.emit("toggle_conversation_pin", { conversationId });
+    };
+
+    useEffect(() => {
+        if (!socket) return;
+        const handleConversationPinned = (data: { conversationId: string, isPinned: boolean }) => {
+            setConversations(prev => prev.map(c =>
+                c.conversationId === data.conversationId
+                    ? { ...c, isPinned: data.isPinned, pinnedAt: data.isPinned ? new Date().toISOString() : undefined }
+                    : c
+            ));
+        };
+        socket.on('conversation_pinned', handleConversationPinned);
+        return () => {
+            socket.off('conversation_pinned', handleConversationPinned);
+        };
+    }, [socket]);
+
+
     return (
         <div className="flex flex-col h-full bg-sidebar relative border-r border-white/5">
+            {/* ... (Header and Search remain same) ... */}
+
             {/* Header */}
             <div className="px-5 py-4 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-3">
@@ -342,9 +411,13 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
                                     onSelectConversation(conversation);
                                     setConversations(prev => prev.map(c =>
                                         c.conversationId === conversation.conversationId
-                                            ? { ...c, unreadCount: 0 }
+                                            ? { ...c, unreadCount: 0, isManuallyUnread: false }
                                             : c
                                     ));
+                                }}
+                                onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    setContextMenu({ x: e.clientX, y: e.clientY, conversationId: conversation.conversationId });
                                 }}
                                 className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all duration-200 group relative text-left
                                     ${isSelected
@@ -369,8 +442,11 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
 
                                 <div className="flex-1 min-w-0">
                                     <div className="flex justify-between items-baseline mb-0.5">
-                                        <h3 className={`font-semibold text-[13.5px] truncate ${isSelected ? 'text-white' : 'text-gray-200'}`}>
+                                        <h3 className={`font-semibold text-[13.5px] truncate flex items-center gap-1.5 ${isSelected ? 'text-white' : 'text-gray-200'}`}>
                                             {isGroup ? conversation.name : otherUser?.username}
+                                            {conversation.isPinned && (
+                                                <svg className="w-3.5 h-3.5 text-accent-emerald transform rotate-45" fill="currentColor" viewBox="0 0 24 24"><path d="M16 12V4H17V2H7V4H8V12L6 14V16H11.2V22H12.8V16H18V14L16 12Z" /></svg>
+                                            )}
                                         </h3>
                                         <span className={`text-[10px] ${isSelected ? 'text-primary-400' : 'text-gray-500'}`}>
                                             {formatMessageTime(conversation.lastMessageTime)}
@@ -386,9 +462,9 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
                                     </p>
                                 </div>
 
-                                {unreadCount > 0 && !isSelected && (
-                                    <div className="px-1.5 py-0.5 min-w-[18px] h-[18px] bg-primary-600 rounded-full flex items-center justify-center shadow-glow animate-scale-in">
-                                        <span className="text-[10px] font-bold text-white">{unreadCount}</span>
+                                {(unreadCount > 0 || (conversation.isManuallyUnread && !isSelected)) && (
+                                    <div className={`${unreadCount > 0 ? 'px-1.5 py-0.5 min-w-[18px] h-[18px]' : 'w-3 h-3'} bg-primary-600 rounded-full flex items-center justify-center shadow-glow animate-scale-in`}>
+                                        {unreadCount > 0 && <span className="text-[10px] font-bold text-white">{unreadCount}</span>}
                                     </div>
                                 )}
                             </button>
@@ -396,6 +472,39 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
                     })}
                 </div>
             </div>
+
+            {contextMenu && (
+                <div
+                    style={{ top: contextMenu.y, left: contextMenu.x }}
+                    className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-1 min-w-[150px] animate-scale-in"
+                >
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handlePinConversation(contextMenu.conversationId);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-white/10 rounded text-sm text-gray-200 flex items-center gap-2"
+                    >
+                        <svg className="w-4 h-4 text-accent-emerald" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                        </svg>
+                        {conversations.find(c => c.conversationId === contextMenu.conversationId)?.isPinned ? "Unpin Chat" : "Pin Chat"}
+                    </button>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handleMarkUnread(contextMenu.conversationId);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-white/10 rounded text-sm text-gray-200 flex items-center gap-2"
+                    >
+                        <svg className="w-4 h-4 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        Mark as unread
+                    </button>
+                </div>
+            )}
 
             <CreateGroupModal
                 isOpen={isCreateGroupModalOpen}

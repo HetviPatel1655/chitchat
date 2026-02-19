@@ -35,5 +35,6 @@ export interface IReadStatus {
     userId: Types.ObjectId;
     conversationId: Types.ObjectId;
     lastReadAt: Date;
+    isManuallyUnread: boolean;
 }
 

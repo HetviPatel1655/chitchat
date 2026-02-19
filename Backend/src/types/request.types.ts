@@ -5,7 +5,7 @@ export interface Request extends ExpresesRequest {
   authUser?: IUsers;
   userId?: string;
   // admin?: boolean;
-  // files?:
-  //   | { [fieldname: string]: Express.Multer.File[] }
-  //   | Express.Multer.File[];
+  files?:
+    | { [fieldname: string]: Express.Multer.File[] }
+    | Express.Multer.File[];
 }

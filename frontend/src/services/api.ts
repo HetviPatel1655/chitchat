@@ -35,4 +35,15 @@ api.interceptors.response.use(
     }
 );
 
+// File Upload Helper
+export const uploadFile = async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.post("/chat/upload", formData, {
+        headers: {
+            "Content-Type": "multipart/form-data",
+        },
+    });
+};
+
 export default api;

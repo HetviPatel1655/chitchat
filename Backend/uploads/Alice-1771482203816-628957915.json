@@ -1,0 +1,23 @@
+[
+  {
+    "id": 1,
+    "name": "Pen",
+    "category": "Stationery",
+    "price": 10,
+    "quantity": 20
+  },
+  {
+    "id": 2,
+    "name": "Notebook",
+    "category": "Stationery",
+    "price": 50,
+    "quantity": 15
+  },
+  {
+    "id": 3,
+    "name": "Eraser",
+    "category": "Stationery",
+    "price": 5,
+    "quantity": 30
+  }
+]

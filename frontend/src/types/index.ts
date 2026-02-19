@@ -8,17 +8,25 @@ export interface User {
 export interface Message {
     _id: string;
     conversationId: string;
-    senderId: string;
+    senderId: any; // Allow object or string
     content: string;
     status: 'sent' | 'delivered' | 'read';
     timestamp: string;
     isPinned?: boolean;
-    messageType?: 'regular' | 'system';
+    messageType?: 'regular' | 'system' | 'image' | 'video' | 'file';
+    fileUrl?: string;
+    fileName?: string;
+    fileSize?: number;
+    mimeType?: string;
     replyTo?: {
         _id: string;
         content: string;
-        senderId: { _id?: string; username: string } | string;
+        senderId: any;
     };
+    reactions?: {
+        emoji: string;
+        userId: any; // string or populated user object
+    }[];
 }
 
 export interface Conversation {
@@ -41,4 +49,7 @@ export interface Conversation {
     };
     lastMessageTime: string;
     unreadCount?: number;
+    isManuallyUnread?: boolean;
+    isPinned?: boolean;
+    pinnedAt?: string;
 }

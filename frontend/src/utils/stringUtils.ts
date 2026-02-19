@@ -23,3 +23,27 @@ export const formatSystemMessage = (content: string, username?: string): string 
         return "you";
     });
 };
+
+/**
+ * Formats a date string into a chat-friendly date label.
+ * - Today -> "Today"
+ * - Yesterday -> "Yesterday"
+ * - This week -> "Monday", "Tuesday", etc.
+ * - Older -> "Feb 15, 2024"
+ */
+export const formatMessageDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    if (date.toDateString() === today.toDateString()) {
+        return "Today";
+    } else if (date.toDateString() === yesterday.toDateString()) {
+        return "Yesterday";
+    } else {
+        return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined });
+    }
+};
+
+

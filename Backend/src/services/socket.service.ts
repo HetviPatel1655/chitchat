@@ -44,7 +44,10 @@ export class SocketService {
             const userId = socket.data.userId;
             const username = socket.data.user?.username;
 
-            console.log(`✅ User ${username} (${userId}) connected`);
+            //console.log(`✅ User ${username} (${userId}) connected`);
+
+            // Join user-specific room for private notifications (like pin updates)
+            socket.join(`user_${userId}`);
 
             // Delta: Mark all pending messages as delivered
             const deliveredMessages = await chatservice.markMessagesAsDelivered(userId);
@@ -70,7 +73,7 @@ export class SocketService {
             const userConversations = await ConversationsModel.find({ participants: userId });
             userConversations.forEach(conv => {
                 socket.join(conv._id.toString());
-                console.log(`📡 User ${username} auto-joined room: ${conv._id}`);
+                //  console.log(`📡 User ${username} auto-joined room: ${conv._id}`);
             });
 
             // 3. Track active users
@@ -276,14 +279,14 @@ export class SocketService {
             // ==================== JOIN CONVERSATION ====================
             socket.on("join_conversation", (data: { conversationId: string }) => {
                 socket.join(data.conversationId);
-                console.log(`👥 User ${username} explicitly joined room: ${data.conversationId}`);
+               // console.log(`👥 User ${username} explicitly joined room: ${data.conversationId}`);
             });
 
             // ==================== TYPING INDICATOR ====================
             socket.on("typing", (data: { conversationId: string; isTyping: boolean }) => {
-                console.log(`⌨️ ${username} typing=${data.isTyping} in room ${data.conversationId}`);
+             //   console.log(`${username} typing=${data.isTyping} in room ${data.conversationId}`);
                 const room = io.sockets.adapter.rooms.get(data.conversationId);
-                console.log(`⌨️ Room ${data.conversationId} has ${room ? room.size : 0} members:`, room ? [...room] : []);
+                //console.log(`⌨️ Room ${data.conversationId} has ${room ? room.size : 0} members:`, room ? [...room] : []);
                 socket.to(data.conversationId).emit("user_typing", {
                     userId,
                     username,
@@ -293,15 +296,17 @@ export class SocketService {
             });
 
             // ==================== SEND MESSAGE ====================
-            socket.on("send_message", async (data: { conversationId: string; content: string; replyToId?: string }, callback) => {
+            socket.on("send_message", async (data: { conversationId: string; content: string; replyToId?: string; fileName?: string; fileUrl?: string; fileSize?: number; mimeType?: string; messageType?: string }, callback) => {
                 try {
-                    const { conversationId, content, replyToId } = data;
-                    if (!content?.trim()) {
+                    const { conversationId, content, replyToId, fileName, fileUrl, fileSize, mimeType, messageType } = data;
+
+                    // Allow empty content IF there is a file attached
+                    if (!content?.trim() && !fileUrl) {
                         if (typeof callback === 'function') callback({ success: false, error: "Empty message" });
                         return;
                     }
 
-                    const message = await chatservice.saveMessage(userId, conversationId, content, replyToId);
+                    const message = await chatservice.saveMessage(userId, conversationId, content, replyToId, fileName, fileUrl, fileSize, mimeType, messageType);
 
                     // Find recipient to notify their sidebar
                     const conversation = await ConversationsModel.findById(conversationId);
@@ -349,6 +354,11 @@ export class SocketService {
                         content: message.content,
                         timestamp: message.timestamp,
                         status: status,
+                        fileName: message.fileName,
+                        fileUrl: message.fileUrl,
+                        fileSize: message.fileSize,
+                        mimeType: message.mimeType,
+                        messageType: message.messageType,
                         type: conversation.type,
                         ...(replyTo && { replyTo })
                     };
@@ -410,11 +420,7 @@ export class SocketService {
             });
 
             // ==================== TYPING ====================
-            socket.on("user_typing", (data: { conversationId: string; isTyping: boolean }) => {
-                socket.to(data.conversationId).emit("user_typing_status", {
-                    userId, username, isTyping: data.isTyping
-                });
-            });
+
 
             // ==================== MARK MESSAGES READ ====================
             socket.on("mark_messages_read", async (data: { conversationId: string }) => {
@@ -437,6 +443,63 @@ export class SocketService {
                 }
             });
 
+            // ==================== MARK CONVERSATION UNREAD ====================
+            socket.on("mark_conversation_unread", async (data: { conversationId: string }, callback) => {
+                try {
+                    await chatservice.markConversationAsUnread(userId, data.conversationId);
+
+                    // Notify only this user's other sessions/tabs
+                    io.to(`user_${userId}`).emit("conversation_unread", {
+                        conversationId: data.conversationId
+                    });
+
+                    if (typeof callback === 'function') callback({ success: true });
+                } catch (error) {
+                    console.error("Socket mark_conversation_unread error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: "Failed to mark as unread" });
+                }
+            });
+
+            // ==================== ADD REACTION ====================
+            socket.on("add_reaction", async (data: { messageId: string, emoji: string }, callback) => {
+                try {
+                    const updatedMessage = await chatservice.toggleReaction(userId, data.messageId, data.emoji);
+
+                    if (updatedMessage) {
+                        const payload = {
+                            messageId: updatedMessage._id.toString(),
+                            conversationId: updatedMessage.conversationId.toString(),
+                            reactions: updatedMessage.reactions
+                        };
+
+                        io.to(updatedMessage.conversationId.toString()).emit("message_reaction_update", payload);
+
+                        if (typeof callback === 'function') callback({ success: true, data: payload });
+                    }
+                } catch (error) {
+                    console.error("Socket add_reaction error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: "Failed to add reaction" });
+                }
+            });
+
+            // ==================== TOGGLE CONVERSATION PIN ====================
+            socket.on("toggle_conversation_pin", async (data: { conversationId: string }, callback) => {
+                try {
+                    const result = await chatservice.toggleConversationPin(userId, data.conversationId);
+
+                    // Notify only this user's other sessions/tabs
+                    io.to(`user_${userId}`).emit("conversation_pinned", {
+                        conversationId: data.conversationId,
+                        isPinned: result.isPinned
+                    });
+
+                    if (typeof callback === 'function') callback({ success: true, data: result });
+                } catch (error) {
+                    console.error("Socket toggle_conversation_pin error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: "Failed to toggle pin" });
+                }
+            });
+
             // ==================== DISCONNECT ====================
             socket.on("disconnect", async () => {
                 const userSockets = activeUsers.get(userId);
@@ -451,7 +514,7 @@ export class SocketService {
                         io.emit("user_offline", { userId, username, lastSeen: lastSeen.toISOString() });
                     }
                 }
-                console.log(`❌ User ${username} disconnected`);
+               // console.log(`❌ User ${username} disconnected`);
             });
         });
     }

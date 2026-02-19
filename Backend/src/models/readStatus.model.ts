@@ -4,12 +4,18 @@ export interface IReadStatus extends Document {
     userId: Types.ObjectId;
     conversationId: Types.ObjectId;
     lastReadAt: Date;
+    isManuallyUnread: boolean;
+    isPinned: boolean;
+    pinnedAt?: Date;
 }
 
 const ReadStatusSchema: Schema = new Schema({
     userId: { type: Schema.Types.ObjectId, ref: "Users", required: true },
     conversationId: { type: Schema.Types.ObjectId, ref: "Conversations", required: true },
-    lastReadAt: { type: Date, default: Date.now }
+    lastReadAt: { type: Date, default: Date.now },
+    isManuallyUnread: { type: Boolean, default: false },
+    isPinned: { type: Boolean, default: false },
+    pinnedAt: { type: Date }
 }, { timestamps: true });
 
 // Index for efficient lookup and to ensure one record per user per conversation
