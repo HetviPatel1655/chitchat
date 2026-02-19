@@ -7,7 +7,7 @@ export interface IMsgs extends Document {
     status: "sent" | "delivered" | "read";
     isPinned: boolean;
     replyToId?: Types.ObjectId;
-    messageType: 'regular' | 'system' | 'image' | 'video' | 'file';
+    messageType: 'regular' | 'system' | 'image' | 'video' | 'file' | 'audio';
     fileUrl: string;
     fileName: string;
     fileSize: number;
@@ -50,7 +50,7 @@ const MsgsSchema: Schema = new Schema({
     },
     messageType: {
         type: String,
-        enum: ["regular", "system", "image", "video", "file"],
+        enum: ["regular", "system", "image", "video", "file", "audio"],
         default: "regular"
     },
     reactions: [{

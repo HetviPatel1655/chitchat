@@ -13,12 +13,13 @@ interface MessageBubbleProps {
     onReply?: (message: Message) => void;
     onQuoteClick?: (messageId: string) => void;
     onImageClick?: (imageUrl: string) => void;
+    onVideoClick?: (videoUrl: string) => void;
     onFileClick?: (fileUrl: string, fileName: string, fileType: string) => void;
 }
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, senderName, onPinToggle, onReply, onQuoteClick, onImageClick, onFileClick }) => {
+const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, senderName, onPinToggle, onReply, onQuoteClick, onImageClick, onVideoClick, onFileClick }) => {
     const { socket } = useSocket();
     const { user } = useAuth();
     const [showReactionPicker, setShowReactionPicker] = useState(false);
@@ -168,11 +169,24 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
                         {message.fileUrl && (
                             <div className="mb-1.5 rounded-lg overflow-hidden relative group/media">
                                 {message.messageType === 'video' ? (
-                                    <video
-                                        src={message.fileUrl}
-                                        controls
-                                        className="max-w-[260px] max-h-[300px] object-cover w-full h-auto bg-black/20"
-                                    />
+                                    <div className="relative group/video">
+                                        <video
+                                            src={message.fileUrl}
+                                            controls
+                                            className="max-w-[260px] max-h-[300px] object-cover w-full h-auto bg-black/20"
+                                        />
+                                        {/* Expand Button Overlay */}
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onVideoClick?.(message.fileUrl!);
+                                            }}
+                                            className="absolute top-2 right-2 p-1.5 bg-black/40 hover:bg-black/60 text-white rounded-full opacity-0 group-hover/video:opacity-100 transition-opacity backdrop-blur-sm z-10"
+                                            title="Expand Video"
+                                        >
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1" /></svg>
+                                        </button>
+                                    </div>
                                 ) : message.messageType === 'image' || (!message.messageType && (message.mimeType?.startsWith('image/') || message.fileName?.match(/\.(jpg|jpeg|png|gif|webp)$/i))) ? (
                                     <img
                                         src={message.fileUrl}
@@ -180,6 +194,15 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
                                         className="max-w-[260px] max-h-[300px] object-cover w-full h-auto cursor-pointer hover:opacity-95 transition-opacity"
                                         onClick={() => onImageClick?.(message.fileUrl!)}
                                     />
+                                ) : message.messageType === 'audio' || (!message.messageType && (message.mimeType?.startsWith('audio/') || message.fileName?.match(/\.(mp3|wav|ogg|m4a|aac)$/i))) ? (
+                                    <div className="flex items-center gap-2 p-2 min-w-[240px] bg-black/20 rounded-lg">
+                                        <audio
+                                            controls
+                                            src={message.fileUrl}
+                                            className="w-full h-8"
+                                            style={{ filter: isMyMessage ? 'invert(1)' : 'none' }}
+                                        />
+                                    </div>
                                 ) : (
                                     // Generic File Card
                                     <div

@@ -13,7 +13,7 @@ export interface Message {
     status: 'sent' | 'delivered' | 'read';
     timestamp: string;
     isPinned?: boolean;
-    messageType?: 'regular' | 'system' | 'image' | 'video' | 'file';
+    messageType?: 'regular' | 'system' | 'image' | 'video' | 'file' | 'audio';
     fileUrl?: string;
     fileName?: string;
     fileSize?: number;

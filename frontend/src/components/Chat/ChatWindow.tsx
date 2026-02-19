@@ -11,7 +11,8 @@ import PinnedMessagesBar from '../UI/PinnedMessagesBar';
 import AddMemberModal from './AddMemberModal';
 import MemberListModal from './MemberListModal';
 import ConfirmModal from '../UI/ConfirmModal';
-import ImageModal from './ImageModal';
+import MediaModal from './MediaModal';
+import AttachmentMenu from './AttachmentMenu';
 import FilePreviewModal from './FilePreviewModal';
 
 interface ChatWindowProps {
@@ -42,7 +43,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
     const [hasMore, setHasMore] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [showScrollBottom, setShowScrollBottom] = useState(false);
-    const [selectedImage, setSelectedImage] = useState<string | null>(null);
+    const [selectedMedia, setSelectedMedia] = useState<{ url: string; type: 'image' | 'video' } | null>(null);
     const [selectedFile, setSelectedFile] = useState<{ url: string; name: string; type: string } | null>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null); // Ref for scroll container
 
@@ -60,6 +61,33 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
 
     const showAlert = (title: string, message: string, type: 'danger' | 'info' = 'info', onConfirm?: () => void) => {
         setAlertConfig({ isOpen: true, title, message, type, onConfirm });
+    };
+
+    const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleAttachmentSelect = (type: 'document' | 'photos' | 'videos' | 'audio') => {
+        setIsAttachmentMenuOpen(false); // Close menu
+        if (!fileInputRef.current) return;
+
+        switch (type) {
+            case 'document':
+                fileInputRef.current.accept = ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv";
+                fileInputRef.current.click();
+                break;
+            case 'photos':
+                fileInputRef.current.accept = "image/*";
+                fileInputRef.current.click();
+                break;
+            case 'videos':
+                fileInputRef.current.accept = "video/*";
+                fileInputRef.current.click();
+                break;
+            case 'audio':
+                fileInputRef.current.accept = "audio/*";
+                fileInputRef.current.click();
+                break;
+        }
     };
 
     useEffect(() => {
@@ -394,7 +422,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
         });
     };
 
-    const fileInputRef = useRef<HTMLInputElement>(null);
+
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -413,7 +441,10 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                 fileName: originalName || file.name, // Use original name from server or file object
                 fileSize: size,
                 mimeType: mimetype,
-                messageType: mimetype.startsWith('image/') ? 'image' : mimetype.startsWith('video/') ? 'video' : 'file'
+                messageType: mimetype.startsWith('image/') ? 'image'
+                    : mimetype.startsWith('video/') ? 'video'
+                        : mimetype.startsWith('audio/') ? 'audio'
+                            : 'file'
             }, (response: any) => {
                 if (response.success) {
                     // Message will be received via socket 'receive_message' event
@@ -620,7 +651,8 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                                     senderName={senderName}
                                     onPinToggle={handlePinToggle}
                                     onReply={(m) => { setReplyingTo(m); inputRef.current?.focus(); }}
-                                    onImageClick={(url) => setSelectedImage(url)}
+                                    onImageClick={(url) => setSelectedMedia({ url, type: 'image' })}
+                                    onVideoClick={(url) => setSelectedMedia({ url, type: 'video' })}
                                     onFileClick={(url, name, type) => setSelectedFile({ url, name, type })}
                                     onQuoteClick={(id) => {
                                         const el = document.getElementById(`msg-${id}`);
@@ -692,14 +724,21 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                         />
 
                         {/* Attachment Button */}
-                        <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="p-2.5 text-gray-500 hover:text-primary-400 hover:bg-white/5 rounded-xl transition-all"
-                            title="Attach file"
-                        >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
-                        </button>
+                        <div className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setIsAttachmentMenuOpen(!isAttachmentMenuOpen)}
+                                className={`p-2.5 rounded-xl transition-all ${isAttachmentMenuOpen ? 'text-primary-400 bg-white/10' : 'text-gray-500 hover:text-primary-400 hover:bg-white/5'}`}
+                                title="Attach file"
+                            >
+                                <svg className={`w-5 h-5 transform transition-transform ${isAttachmentMenuOpen ? 'rotate-45' : ''}`} fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                            </button>
+                            <AttachmentMenu
+                                isOpen={isAttachmentMenuOpen}
+                                onOptionSelect={handleAttachmentSelect}
+                                onClose={() => setIsAttachmentMenuOpen(false)}
+                            />
+                        </div>
 
                         {/* Input Field (Pill Shape) */}
                         <div className="flex-1 relative">
@@ -784,10 +823,11 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                 type={alertConfig.type}
             />
 
-            <ImageModal
-                isOpen={!!selectedImage}
-                imageUrl={selectedImage}
-                onClose={() => setSelectedImage(null)}
+            <MediaModal
+                isOpen={!!selectedMedia}
+                mediaUrl={selectedMedia?.url || null}
+                mediaType={selectedMedia?.type || null}
+                onClose={() => setSelectedMedia(null)}
             />
 
             <FilePreviewModal
