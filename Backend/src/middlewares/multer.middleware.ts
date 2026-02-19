@@ -1,6 +1,7 @@
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { Request } from "../types/request.types";
 
 // Ensure upload directory exists
 const uploadDir = "uploads/";
@@ -9,10 +10,10 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
+    destination: (req: Request, file: Express.Multer.File, cb: any) => {
         cb(null, uploadDir);
     },
-    filename: (req: any, file, cb) => {
+    filename: (req: Request, file: Express.Multer.File, cb: any) => {
         const username = req.authUser?.username || req.userId || "anonymous";
         const sanitizedUsername = username.toString().replace(/[^a-zA-Z0-9]/g, "_");
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);

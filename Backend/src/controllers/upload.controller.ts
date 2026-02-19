@@ -1,5 +1,6 @@
 import { StatusCodes } from "http-status-codes";
-import { Request, Response } from "express";
+import { Response } from "express";
+import { Request } from "../types/request.types";
 import { APIError } from "../error/apierror";
 import { uploadService } from "../services/upload.service";
 
