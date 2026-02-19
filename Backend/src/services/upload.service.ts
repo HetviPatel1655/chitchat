@@ -1,9 +1,10 @@
 import mongoose, { ClientSession } from "mongoose";
 import { APIError } from "../error/apierror";
 import { StatusCodes } from "http-status-codes";
+import { MulterFile } from "../types/custom-multer";
 
 export class UploadService {
-    async uploadFile(file: Express.Multer.File, session?: ClientSession) {
+    async uploadFile(file: MulterFile, session?: ClientSession) {
         try {
             // File is already saved by Multer diskStorage
             // Construct the URL to access it
