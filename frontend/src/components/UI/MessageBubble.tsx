@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import type { Message } from '../../types';
 import Avatar from './Avatar';
@@ -15,31 +16,49 @@ interface MessageBubbleProps {
     onImageClick?: (imageUrl: string) => void;
     onVideoClick?: (videoUrl: string) => void;
     onFileClick?: (fileUrl: string, fileName: string, fileType: string) => void;
+    onDeleteForMe?: (messageId: string) => void;
 }
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, senderName, onPinToggle, onReply, onQuoteClick, onImageClick, onVideoClick, onFileClick }) => {
+const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, senderName, onPinToggle, onReply, onQuoteClick, onImageClick, onVideoClick, onFileClick, onDeleteForMe }) => {
     const { socket } = useSocket();
     const { user } = useAuth();
     const [showReactionPicker, setShowReactionPicker] = useState(false);
+    const [showActionsDropdown, setShowActionsDropdown] = useState(false);
+    const [dropdownUp, setDropdownUp] = useState(false);
     const pickerRef = useRef<HTMLDivElement>(null);
+    const dropdownRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLButtonElement>(null);
 
-    // Close picker when clicking outside
+    // Close picker/dropdown when clicking outside
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
             if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
                 setShowReactionPicker(false);
             }
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setShowActionsDropdown(false);
+            }
         };
 
-        if (showReactionPicker) {
+        if (showReactionPicker || showActionsDropdown) {
             document.addEventListener('mousedown', handleClickOutside);
         }
         return () => {
             document.removeEventListener('mousedown', handleClickOutside);
         };
-    }, [showReactionPicker]);
+    }, [showReactionPicker, showActionsDropdown]);
+
+    // Handle dropdown positioning
+    useEffect(() => {
+        if (showActionsDropdown && triggerRef.current) {
+            const rect = triggerRef.current.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - rect.bottom;
+            // If less than 200px below (typical dropdown height), open upwards
+            setDropdownUp(spaceBelow < 200);
+        }
+    }, [showActionsDropdown]);
 
     const handlePinClick = async () => {
         if (!socket) {
@@ -84,6 +103,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
 
     const hasReactions = Object.keys(groupedReactions).length > 0;
 
+
     if (message.messageType === 'system') {
         return (
             <div className="flex justify-center w-full my-4 animate-fade-in">
@@ -96,8 +116,59 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
         );
     }
 
+    // Handle deleted messages
+    if (message.isDeleted) {
+        return (
+            <div id={`msg-${message._id}`} className={`flex w-full ${isMyMessage ? 'justify-end' : 'justify-start'} mb-1.5 animate-fade-in`}>
+                <div className={`group flex items-center gap-2 relative ${isMyMessage ? 'flex-row-reverse' : 'flex-row'}`}>
+                    <div className={`flex items-center gap-2 px-3 py-2 rounded-lg italic text-sm text-gray-400 border border-white/5 bg-white/5`}>
+                        <svg className="w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                        </svg>
+                        <span>This message was deleted</span>
+                    </div>
+
+                    {/* Delete for me button */}
+                    <button
+                        onClick={() => {
+                            if (!socket || !window.confirm("Remove this deleted message placeholder?")) return;
+                            console.log("🗑️ Emitting delete_message_for_me for:", message._id);
+                            socket.emit("delete_message_for_me", { messageId: message._id }, (response: any) => {
+                                console.log("🗑️ delete_message_for_me response:", response);
+                                if (response.success) {
+                                    console.log("✅ Calling onDeleteForMe callback");
+                                    onDeleteForMe?.(message._id);
+                                } else {
+                                    console.error("❌ Failed to delete for me:", response.error);
+                                }
+                            });
+                        }}
+                        className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-white/5 rounded-full opacity-0 group-hover:opacity-100 transition-all"
+                        title="Remove from view"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    const handleDeleteClick = () => {
+        if (!socket || !window.confirm("Delete this message?")) return;
+
+        socket.emit("delete_message", {
+            messageId: message._id,
+            conversationId: message.conversationId
+        }, (response: any) => {
+            if (!response.success) {
+                alert("Failed to delete message: " + (response.error || "Unknown error"));
+            }
+        });
+    };
+
     return (
         <div id={`msg-${message._id}`} className={`flex w-full ${isMyMessage ? 'justify-end' : 'justify-start'} mb-1.5 group animate-scale-in relative transition-all duration-500`}>
+            {/* Main Flex Container */}
             <div className={`flex max-w-[60%] ${isMyMessage ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 relative`}>
 
                 {/* Avatar Compact for received */}
@@ -237,8 +308,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
                             </div>
                         )}
 
+                        {/* Text Content */}
                         {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
 
+                        {/* Timestamp + Ticks */}
                         <div className={`flex items-center gap-1 mt-1 text-[10px] ${isMyMessage ? 'justify-end' : 'justify-start'}`}
                             style={{ color: isMyMessage ? 'rgba(255,255,255,0.6)' : '#6B7280' }}
                         >
@@ -297,38 +370,58 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isMyMessage, sen
                     </div>
                 </div>
 
-                {/* Action Buttons - Show on Hover */}
-                <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-transparent">
-                    {/* React Button */}
+                {/* 3-Dot Action Menu - Sleek & Absolute */}
+                <div className="relative self-center h-fit">
                     <button
-                        onClick={() => setShowReactionPicker(!showReactionPicker)}
-                        className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"
-                        title="Add reaction"
+                        ref={triggerRef}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setShowActionsDropdown(!showActionsDropdown);
+                        }}
+                        className={`p-1 rounded-full text-gray-400 hover:text-white hover:bg-white/10 transition-all ${showActionsDropdown ? 'opacity-100 bg-white/10' : 'opacity-0 group-hover:opacity-100'}`}
+                        title="Message options"
                     >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
                         </svg>
                     </button>
-                    {/* Reply Button */}
-                    <button
-                        onClick={() => onReply?.(message)}
-                        className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"
-                        title="Reply"
-                    >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                        </svg>
-                    </button>
-                    {/* Pin Button */}
-                    <button
-                        onClick={handlePinClick}
-                        className="p-1.5 hover:bg-white/10 rounded-lg"
-                        title={message.isPinned ? "Unpin message" : "Pin message"}
-                    >
-                        <span className={`text-base ${message.isPinned ? 'text-accent-emerald' : 'text-gray-400'}`}>
-                            📌
-                        </span>
-                    </button>
+
+                    {/* Dropdown Menu */}
+                    {showActionsDropdown && (
+                        <div
+                            ref={dropdownRef}
+                            className={`absolute z-[100] ${isMyMessage ? 'right-0' : 'left-0'} ${dropdownUp ? 'bottom-full mb-2 origin-bottom-right' : 'top-full mt-1 origin-top-right'} min-w-[140px] bg-[#1e293b]/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-scale-in`}
+                        >
+                            <button
+                                onClick={() => { setShowReactionPicker(true); setShowActionsDropdown(false); }}
+                                className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2 transition-colors"
+                            >
+                                <span className="text-base leading-none">😊</span> React
+                            </button>
+                            <button
+                                onClick={() => { onReply?.(message); setShowActionsDropdown(false); }}
+                                className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2 transition-colors"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+                                Reply
+                            </button>
+                            <button
+                                onClick={() => { handlePinClick(); setShowActionsDropdown(false); }}
+                                className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2 transition-colors"
+                            >
+                                <span className="text-base leading-none">📌</span> {message.isPinned ? "Unpin" : "Pin"}
+                            </button>
+                            {isMyMessage && (
+                                <button
+                                    onClick={() => { handleDeleteClick(); setShowActionsDropdown(false); }}
+                                    className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2 transition-colors border-t border-white/5"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                    Delete
+                                </button>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

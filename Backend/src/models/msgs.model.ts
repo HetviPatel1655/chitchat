@@ -6,6 +6,8 @@ export interface IMsgs extends Document {
     content: string;
     status: "sent" | "delivered" | "read";
     isPinned: boolean;
+    isDeleted: boolean;
+    deletedBy: Types.ObjectId[];
     replyToId?: Types.ObjectId;
     messageType: 'regular' | 'system' | 'image' | 'video' | 'file' | 'audio';
     fileUrl: string;
@@ -43,11 +45,19 @@ const MsgsSchema: Schema = new Schema({
         type: Boolean,
         default: false
     },
+    isDeleted: {
+        type: Boolean,
+        default: false
+    },
     replyToId: {
         type: Schema.Types.ObjectId,
         ref: "Msgs",
         default: null
     },
+    deletedBy: [{
+        type: Schema.Types.ObjectId,
+        ref: "Users"
+    }],
     messageType: {
         type: String,
         enum: ["regular", "system", "image", "video", "file", "audio"],

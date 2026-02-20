@@ -6,7 +6,7 @@ import { chatservice } from "./chat.service";
 import { MsgsModel } from "../models/msgs.model";
 import { GrpsService } from "./grps.service";
 import { GrpsModel } from "../models/groups.model";
-import { Types } from "mongoose";
+import mongoose, { Types } from "mongoose";
 
 // Store active users: userId -> Array of socketIds
 const activeUsers = new Map<string, string[]>();
@@ -279,12 +279,12 @@ export class SocketService {
             // ==================== JOIN CONVERSATION ====================
             socket.on("join_conversation", (data: { conversationId: string }) => {
                 socket.join(data.conversationId);
-               // console.log(`👥 User ${username} explicitly joined room: ${data.conversationId}`);
+                // console.log(`👥 User ${username} explicitly joined room: ${data.conversationId}`);
             });
 
             // ==================== TYPING INDICATOR ====================
             socket.on("typing", (data: { conversationId: string; isTyping: boolean }) => {
-             //   console.log(`${username} typing=${data.isTyping} in room ${data.conversationId}`);
+                //   console.log(`${username} typing=${data.isTyping} in room ${data.conversationId}`);
                 const room = io.sockets.adapter.rooms.get(data.conversationId);
                 //console.log(`⌨️ Room ${data.conversationId} has ${room ? room.size : 0} members:`, room ? [...room] : []);
                 socket.to(data.conversationId).emit("user_typing", {
@@ -419,6 +419,131 @@ export class SocketService {
                 }
             });
 
+
+            // ==================== DELETE MESSAGE ====================
+            socket.on("delete_message", async (data: { messageId: string; conversationId: string }, callback) => {
+                try {
+                    const message = await MsgsModel.findById(data.messageId);
+
+                    if (!message) {
+                        if (typeof callback === 'function') callback({ success: false, error: "Message not found" });
+                        return;
+                    }
+
+                    // Only sender can delete their message
+                    if (message.senderId.toString() !== userId) {
+                        if (typeof callback === 'function') callback({ success: false, error: "Unauthorized" });
+                        return;
+                    }
+
+                    // Update message to deleted state
+                    message.isDeleted = true;
+                    message.content = "This message was deleted";
+                    message.fileUrl = "";
+                    message.fileName = "";
+                    message.fileSize = 0;
+                    message.mimeType = "";
+                    message.messageType = "regular"; // Reset type
+
+                    await message.save();
+
+                    // Update conversation's last message to reflect deletion
+                    const latestMsg = await MsgsModel.findOne({ conversationId: data.conversationId })
+                        .sort({ timestamp: -1 })
+                        .lean();
+
+                    if (latestMsg) {
+                        let previewContent = latestMsg.content || "";
+                        if (!previewContent) {
+                            if (latestMsg.messageType === 'image') previewContent = '📷 Image';
+                            else if (latestMsg.messageType === 'video') previewContent = '🎥 Video';
+                            else if (latestMsg.fileName) previewContent = `📄 ${latestMsg.fileName}`;
+                            else previewContent = 'File';
+                        }
+
+                        await ConversationsModel.findByIdAndUpdate(data.conversationId, {
+                            lastMessage: {
+                                content: previewContent,
+                                senderId: latestMsg.senderId,
+                                timestamp: latestMsg.timestamp
+                            }
+                        });
+                    }
+
+                    // Broadcast to conversation room
+                    const payload = {
+                        messageId: data.messageId,
+                        conversationId: data.conversationId,
+                        isDeleted: true
+                    };
+
+                    io.to(data.conversationId).emit("message_deleted", payload);
+
+                    if (typeof callback === 'function') callback({ success: true, messageId: data.messageId });
+                } catch (error) {
+                    console.error("Socket delete_message error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: "Failed to delete message" });
+                }
+            });
+
+            // ==================== DELETE MESSAGE FOR ME ====================
+            socket.on("delete_message_for_me", async (data: { messageId: string; conversationId: string }, callback) => {
+                try {
+                    const message = await MsgsModel.findById(data.messageId);
+
+                    if (!message) {
+                        if (typeof callback === 'function') callback({ success: false, error: "Message not found" });
+                        return;
+                    }
+
+                    // Add user to deletedBy array
+                    if (!message.deletedBy) message.deletedBy = [];
+                    // Check if already deleted
+                    if (message.deletedBy.some(id => id.toString() === userId)) {
+                        if (typeof callback === 'function') callback({ success: true, messageId: data.messageId });
+                        return;
+                    }
+
+                    message.deletedBy.push(new mongoose.Types.ObjectId(userId));
+                    await message.save();
+
+                    // Calculate the new latest message for this user for sidebar preview
+                    const latestMsg = await MsgsModel.findOne({
+                        conversationId: data.conversationId,
+                        deletedBy: { $ne: new mongoose.Types.ObjectId(userId) }
+                    })
+                        .sort({ timestamp: -1 })
+                        .lean();
+
+                    let previewContent = "No messages";
+                    let previewTime = new Date();
+
+                    if (latestMsg) {
+                        previewContent = latestMsg.content || "";
+                        if (!previewContent) {
+                            if (latestMsg.messageType === 'image') previewContent = '📷 Image';
+                            else if (latestMsg.messageType === 'video') previewContent = '🎥 Video';
+                            else if (latestMsg.fileName) previewContent = `📄 ${latestMsg.fileName}`;
+                            else previewContent = 'File';
+                        }
+                        previewTime = latestMsg.timestamp;
+                    }
+
+                    // Emit only to the user who performed the action 
+                    // Use their specific user room instead of socket.id for robustness
+                    io.to(`user_${userId}`).emit("conversation_updated", {
+                        conversationId: data.conversationId,
+                        lastMessage: previewContent,
+                        lastMessageTime: previewTime
+                    });
+
+                    if (typeof callback === 'function') callback({ success: true, messageId: data.messageId });
+                } catch (error) {
+                    console.error("Socket delete_message_for_me error:", error);
+                    if (typeof callback === 'function') callback({ success: false, error: "Failed to delete message" });
+                }
+            });
+
             // ==================== TYPING ====================
 
 
@@ -514,7 +639,7 @@ export class SocketService {
                         io.emit("user_offline", { userId, username, lastSeen: lastSeen.toISOString() });
                     }
                 }
-               // console.log(`❌ User ${username} disconnected`);
+                // console.log(`❌ User ${username} disconnected`);
             });
         });
     }

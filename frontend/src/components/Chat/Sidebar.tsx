@@ -169,6 +169,34 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
             }));
         };
 
+        const handleMessageDeleted = (data: { messageId: string, conversationId: string, isDeleted: boolean }) => {
+            setConversations(prev => {
+                return prev.map(c => {
+                    if (c.conversationId === data.conversationId) {
+                        // Only update if we don't know the exact message ID (or if it matches, but sidebar doesn't track msg ID directly in state easily without more complex logic)
+                        // Simpler approach: If it's the latest message, update it.
+                        // But providing the new content from backend is better.
+                        // For now, let's assume if we receive this, the last message *might* be the one deleted.
+                        // Actually, better to fetch the updated conversation or rely on a specific 'last_message_updated' event.
+                        // However, for soft delete, we know the content becomes "This message was deleted".
+                        return { ...c, lastMessage: "This message was deleted" };
+                    }
+                    return c;
+                });
+            });
+            // Trigger a refetch to be safe and get accurate last message if it wasn't the very last one
+            fetchConversations();
+        };
+
+        const handleConversationUpdated = (data: { conversationId: string, lastMessage: string, lastMessageTime: string }) => {
+            setConversations(prev => prev.map(c => {
+                if (c.conversationId === data.conversationId) {
+                    return { ...c, lastMessage: data.lastMessage, lastMessageTime: data.lastMessageTime };
+                }
+                return c;
+            }));
+        };
+
         socket.on('receive_message', handleReceiveMessage);
         socket.on('message_read', handleMessageRead);
         socket.on('conversation_unread', handleConversationUnread);
@@ -177,6 +205,8 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
         socket.on('removed_from_group', handleRemovedFromGroup);
         socket.on('member_added', handleMemberAdded);
         socket.on('member_removed', handleMemberRemoved);
+        socket.on('message_deleted', handleMessageDeleted);
+        socket.on('conversation_updated', handleConversationUpdated);
 
         return () => {
             socket.off('receive_message', handleReceiveMessage);
@@ -187,6 +217,8 @@ const Sidebar = ({ onSelectConversation, selectedConversationId, onOnlineStatusC
             socket.off('removed_from_group', handleRemovedFromGroup);
             socket.off('member_added', handleMemberAdded);
             socket.off('member_removed', handleMemberRemoved);
+            socket.off('message_deleted', handleMessageDeleted);
+            socket.off('conversation_updated', handleConversationUpdated);
         };
     }, [socket, selectedConversationId]);
 

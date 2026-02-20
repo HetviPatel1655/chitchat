@@ -260,6 +260,12 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
         socket.on('receive_message', handleReceiveMessage);
         socket.on('message_delivered', handleMessageDelivered);
         socket.on('message_read', handleReadMessages);
+        socket.on('message_deleted', (data: { messageId: string, conversationId: string }) => {
+            if (data.conversationId !== conversation.conversationId) return;
+            setMessages(prev => prev.map(msg =>
+                msg._id === data.messageId ? { ...msg, isDeleted: true, content: "This message was deleted", fileUrl: undefined, fileName: undefined, fileSize: undefined, mimeType: undefined, messageType: 'regular' } : msg
+            ));
+        });
         socket.on('removed_from_group', handleRemovedFromGroup);
         socket.on('group_deleted', handleGroupDeleted);
         socket.on('member_added', handleMemberAdded);
@@ -481,6 +487,10 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
         });
     };
 
+    const handleDeleteForMe = (messageId: string) => {
+        setMessages(prev => prev.filter(m => m._id !== messageId));
+    };
+
     return (
         <div className="flex flex-col h-full min-h-0 relative bg-chat-pattern overflow-hidden">
             {/* Header - Elevated with depth shadow */}
@@ -662,6 +672,7 @@ const ChatWindow = ({ conversation, isOtherUserOnline = false, otherUserLastSeen
                                             setTimeout(() => el.classList.remove('ring-2', 'ring-primary-400/50'), 2000);
                                         }
                                     }}
+                                    onDeleteForMe={handleDeleteForMe}
                                 />
                             </div>
                         );

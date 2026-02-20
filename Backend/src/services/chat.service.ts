@@ -170,7 +170,8 @@ export class chatservice {
             // console.log(`Fetching messages for conv: ${conversationId}, user: ${userId}`);
             const skip = (page - 1) * limit;
             const messages = await MsgsModel.find({
-                conversationId: new mongoose.Types.ObjectId(conversationId)
+                conversationId: new mongoose.Types.ObjectId(conversationId),
+                deletedBy: { $ne: new mongoose.Types.ObjectId(userId) }
             })
                 .populate("senderId", "username email")
                 .populate({
@@ -234,33 +235,26 @@ export class chatservice {
             // Manual population since we bypassed Mongoose
             const populatedConversations = await Promise.all(conversations.map(async (conv) => {
                 const type = conv.type || "direct"; // Fallback for legacy
-                // Ensure we have a lastMessage time for sorting/display
-                // If it's missing from metadata, try to find it in the msgs collection (legacy support)
-                let lastMsgContent = conv.lastMessage?.content;
-                let lastMsgTime = conv.lastMessage?.timestamp || conv.updatedAt || conv.createdAt;
 
-                if (!conv.lastMessage?.content) {
-                    const latestMsg = await MsgsModel.findOne({ conversationId: conv._id })
-                        .sort({ timestamp: -1 })
-                        .lean();
-                    if (latestMsg) {
-                        if (latestMsg.content) lastMsgContent = latestMsg.content;
-                        else if (latestMsg.messageType === 'image') lastMsgContent = '📷 Image';
-                        else if (latestMsg.messageType === 'video') lastMsgContent = '🎥 Video';
-                        else if (latestMsg.fileName) lastMsgContent = `📄 ${latestMsg.fileName}`;
-                        else lastMsgContent = 'File';
+                // Fetch the latest message for this specific user (not in deletedBy)
+                const latestMsg = await MsgsModel.findOne({
+                    conversationId: conv._id,
+                    deletedBy: { $ne: new mongoose.Types.ObjectId(userId) }
+                })
+                    .sort({ timestamp: -1 })
+                    .lean();
 
-                        lastMsgTime = latestMsg.timestamp;
+                let lastMsgContent = "No messages yet";
+                let lastMsgTime = conv.updatedAt || conv.createdAt || new Date();
 
-                        // Async healing - don't wait for this
-                        ConversationsModel.findByIdAndUpdate(conv._id, {
-                            lastMessage: {
-                                content: lastMsgContent,
-                                senderId: latestMsg.senderId,
-                                timestamp: latestMsg.timestamp
-                            }
-                        }).exec().catch(err => console.error("Error healing conversation:", err));
-                    }
+                if (latestMsg) {
+                    if (latestMsg.content) lastMsgContent = latestMsg.content;
+                    else if (latestMsg.messageType === 'image') lastMsgContent = '📷 Image';
+                    else if (latestMsg.messageType === 'video') lastMsgContent = '🎥 Video';
+                    else if (latestMsg.fileName) lastMsgContent = `📄 ${latestMsg.fileName}`;
+                    else lastMsgContent = 'File';
+
+                    lastMsgTime = latestMsg.timestamp;
                 }
 
                 if (type === "group") {
